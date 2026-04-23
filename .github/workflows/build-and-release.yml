@@ -47,9 +47,8 @@ jobs:
       - name: Setup BC DevTools
         run: |
           PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
-          VERSION=$(curl -s "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/index.json" \
-            | python3 -c "import sys,json; vs=[v for v in json.load(sys.stdin)['versions'] if '-' not in v]; print(vs[-1])")
-          echo "BC DevTools version: ${VERSION}"
+          VERSION="${{ needs.build-and-test.outputs.lowest-version }}"
+          echo "BC DevTools version: ${VERSION} (lowest, matching test build)"
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
           unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \

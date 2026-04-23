@@ -12,6 +12,9 @@ on:
       matrix:
         description: "The test matrix JSON (for downstream jobs)"
         value: ${{ jobs.setup.outputs.matrix }}
+      lowest-version:
+        description: "The lowest BC DevTools version (used for compilation)"
+        value: ${{ jobs.setup.outputs.lowest-version }}
 
 permissions:
   contents: read
@@ -22,7 +25,7 @@ jobs:
     name: Setup Test Matrix
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      latest-version: ${{ steps.matrix.outputs.latest-version }}
+      lowest-version: ${{ steps.matrix.outputs.lowest-version }}
 
     steps:
       - name: Query NuGet for available BC DevTools versions
@@ -51,11 +54,11 @@ jobs:
           if max_versions > 0 and len(versions) > max_versions:
               versions = versions[-max_versions:]
 
-          latest = versions[-1] if versions else ''
+          lowest = versions[0] if versions else ''
           matrix = {'include': [{'version': v} for v in versions]}
 
           print(f'matrix={json.dumps(matrix)}')
-          print(f'latest-version={latest}')
+          print(f'lowest-version={lowest}')
           ")
 
           echo "$MATRIX" | head -1 >> "$GITHUB_OUTPUT"
@@ -87,8 +90,8 @@ jobs:
       - name: Setup BC DevTools
         run: |
           PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
-          VERSION="${{ needs.setup.outputs.latest-version }}"
-          echo "Downloading BC DevTools v${VERSION} for build..."
+          VERSION="${{ needs.setup.outputs.lowest-version }}"
+          echo "Downloading BC DevTools v${VERSION} (lowest) for compilation..."
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
           # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
@@ -98,6 +101,13 @@ jobs:
 
       - name: Build
         run: dotnet build --configuration Release
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build
+          path: tests/ALCops.Mcp.Tests/bin/Release/net8.0/
+          retention-days: 1
 
   test:
     runs-on: ubuntu-latest
@@ -110,12 +120,16 @@ jobs:
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Download test build
+        uses: actions/download-artifact@v4
+        with:
+          name: test-build
+          path: test-build
 
       - name: Download BC DevTools v${{ matrix.version }}
         run: |
@@ -128,19 +142,12 @@ jobs:
           unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
             || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
 
-          # Also set up the build-time DevTools (use the same version for consistency)
-          mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
-          cp /tmp/bcdevtools/*.dll Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
-
-      - name: Build
-        run: dotnet build --configuration Release
-
       - name: Test
         env:
           BCDEVELOPMENTTOOLSPATH: /tmp/bcdevtools
         run: |
-          echo "Testing with BC DevTools v${{ matrix.version }}"
-          dotnet test --configuration Release --verbosity normal --logger "trx;LogFileName=results-${{ matrix.version }}.trx"
+          echo "Testing pre-built binary with BC DevTools v${{ matrix.version }}"
+          dotnet test test-build/ALCops.Mcp.Tests.dll --no-build --verbosity normal --logger "trx;LogFileName=results-${{ matrix.version }}.trx"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
