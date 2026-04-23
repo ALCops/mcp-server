@@ -1,0 +1,9 @@
+{
+    "id": "00000000-0000-0000-0000-000000000001",
+    "name": "TestFixture",
+    "publisher": "ALCops",
+    "version": "1.0.0.0",
+    "platform": "25.0.0.0",
+    "runtime": "15.0",
+    "target": "OnPrem"
+}

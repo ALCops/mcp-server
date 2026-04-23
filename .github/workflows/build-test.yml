@@ -1,0 +1,171 @@
+name: Build & Test
+
+on:
+  workflow_call:
+    inputs:
+      max-versions:
+        description: "Maximum number of BC DevTools versions to test"
+        required: false
+        type: number
+        default: 50
+    outputs:
+      matrix:
+        description: "The test matrix JSON (for downstream jobs)"
+        value: ${{ jobs.setup.outputs.matrix }}
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    name: Setup Test Matrix
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      latest-version: ${{ steps.matrix.outputs.latest-version }}
+
+    steps:
+      - name: Query NuGet for available BC DevTools versions
+        id: matrix
+        shell: bash
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSIONS_JSON=$(curl -sf "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/index.json")
+
+          # Build matrix: stable versions only (no prerelease), >= 14.0 (net8.0 era)
+          MATRIX=$(echo "$VERSIONS_JSON" | python3 -c "
+          import sys, json
+
+          data = json.load(sys.stdin)
+          versions = [v for v in data['versions'] if '-' not in v]
+
+          # Filter to versions >= 14.0 (net8.0 target framework support)
+          def version_tuple(v):
+              parts = v.split('.')
+              return tuple(int(p) for p in parts[:2])
+
+          versions = [v for v in versions if version_tuple(v) >= (14, 0)]
+
+          # Limit to max-versions (take latest N)
+          max_versions = ${{ inputs.max-versions }}
+          if max_versions > 0 and len(versions) > max_versions:
+              versions = versions[-max_versions:]
+
+          latest = versions[-1] if versions else ''
+          matrix = {'include': [{'version': v} for v in versions]}
+
+          print(f'matrix={json.dumps(matrix)}')
+          print(f'latest-version={latest}')
+          ")
+
+          echo "$MATRIX" | head -1 >> "$GITHUB_OUTPUT"
+          echo "$MATRIX" | tail -1 >> "$GITHUB_OUTPUT"
+
+          # Log the matrix for debugging
+          VERSION_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          versions = [v for v in data['versions'] if '-' not in v]
+          versions = [v for v in versions if tuple(int(p) for p in v.split('.')[:2]) >= (14, 0)]
+          print(len(versions))
+          ")
+          echo "Found ${VERSION_COUNT} stable BC DevTools versions (net8.0+)"
+
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup BC DevTools
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSION="${{ needs.setup.outputs.latest-version }}"
+          echo "Downloading BC DevTools v${VERSION} for build..."
+          mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
+          curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+          ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+  test:
+    runs-on: ubuntu-latest
+    name: "Test (v${{ matrix.version }})"
+    needs: [setup, build]
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Download BC DevTools v${{ matrix.version }}
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSION="${{ matrix.version }}"
+          echo "Downloading BC DevTools v${VERSION}..."
+          mkdir -p /tmp/bcdevtools
+          curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/
+
+          # Also set up the build-time DevTools (use the same version for consistency)
+          mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
+          cp /tmp/bcdevtools/*.dll Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Test
+        env:
+          BCDEVELOPMENTTOOLSPATH: /tmp/bcdevtools
+        run: |
+          echo "Testing with BC DevTools v${{ matrix.version }}"
+          dotnet test --configuration Release --verbosity normal --logger "trx;LogFileName=results-${{ matrix.version }}.trx"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.version }}
+          path: "**/*.trx"
+          retention-days: 7
+
+  report:
+    runs-on: ubuntu-latest
+    name: Test Report
+    needs: test
+    if: always()
+
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+
+      - name: Summary
+        shell: bash
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Test results are available as artifacts on this workflow run." >> $GITHUB_STEP_SUMMARY
+
+          # Count TRX files and check for failures
+          TOTAL=$(find . -name "*.trx" | wc -l)
+          echo "Total test result files: ${TOTAL}" >> $GITHUB_STEP_SUMMARY

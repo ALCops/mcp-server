@@ -7,6 +7,7 @@ on:
       - "release/**"
     paths:
       - "src/**"
+      - "tests/**"
       - "**/*.sln"
       - "**/*.csproj"
       - "GitVersion.yml"
@@ -22,9 +23,16 @@ permissions:
   packages: write
 
 jobs:
-  build-and-release:
+  build-and-test:
+    uses: ./.github/workflows/build-test.yml
+    with:
+      max-versions: 50
+
+  release:
     runs-on: ubuntu-latest
-    name: Build & Release
+    name: Release
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +84,7 @@ jobs:
           /p:FileVersion=${{ steps.gitversion.outputs.AssemblySemFileVer }}
           /p:InformationalVersion="${{ steps.gitversion.outputs.InformationalVersion }}"
 
-      # Release (only on main or tags)
+      # Release (only on tags)
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
@@ -89,7 +97,6 @@ jobs:
             ./artifacts/*.nupkg
 
       - name: Publish to GitHub Packages
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: >
           dotnet nuget push "./artifacts/*.nupkg"
           --no-symbols
@@ -98,7 +105,6 @@ jobs:
           --skip-duplicate
 
       - name: Publish to NuGet.org
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
