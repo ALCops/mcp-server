@@ -91,7 +91,9 @@ jobs:
           echo "Downloading BC DevTools v${VERSION} for build..."
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
           ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
 
       - name: Build
@@ -122,7 +124,9 @@ jobs:
           echo "Downloading BC DevTools v${VERSION}..."
           mkdir -p /tmp/bcdevtools
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/
+          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
 
           # Also set up the build-time DevTools (use the same version for consistency)
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
