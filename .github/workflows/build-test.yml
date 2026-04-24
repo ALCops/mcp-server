@@ -99,9 +99,10 @@ jobs:
           echo "Downloading BC DevTools v${VERSION} (lowest) for compilation..."
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          # Package layout varies: tools/net8.0/any/ | lib/net8.0/ | lib/net10.0/ (v18+)
           unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
-            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net10.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
           ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
 
       - name: Build
@@ -143,9 +144,10 @@ jobs:
           echo "Downloading BC DevTools v${VERSION}..."
           mkdir -p /tmp/bcdevtools
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          # Package layout varies: tools/net8.0/any/ | lib/net8.0/ | lib/net10.0/ (v18+)
           unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
-            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net10.0/*.dll" -d /tmp/bcdevtools/
 
       - name: Replace BC DevTools DLLs in test build
         run: |
