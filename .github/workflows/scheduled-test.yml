@@ -7,9 +7,9 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   test:
     uses: ./.github/workflows/build-test.yml
-    with:
-      max-versions: 0 # 0 = no limit, test all versions
+

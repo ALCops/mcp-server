@@ -21,12 +21,11 @@ on:
 permissions:
   contents: write
   packages: write
+  checks: write
 
 jobs:
   build-and-test:
     uses: ./.github/workflows/build-test.yml
-    with:
-      max-versions: 50
 
   release:
     runs-on: ubuntu-latest

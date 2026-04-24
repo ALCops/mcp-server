@@ -2,22 +2,17 @@ name: Build & Test
 
 on:
   workflow_call:
-    inputs:
-      max-versions:
-        description: "Maximum number of BC DevTools versions to test"
-        required: false
-        type: number
-        default: 50
     outputs:
       matrix:
         description: "The test matrix JSON (for downstream jobs)"
         value: ${{ jobs.setup.outputs.matrix }}
       lowest-version:
-        description: "The lowest BC DevTools version (used for compilation)"
+        description: "The lowest stable BC DevTools version (used for compilation)"
         value: ${{ jobs.setup.outputs.lowest-version }}
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   setup:
@@ -35,28 +30,32 @@ jobs:
           PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
           VERSIONS_JSON=$(curl -sf "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/index.json")
 
-          # Build matrix: stable versions only (no prerelease), >= 14.0 (net8.0 era)
           MATRIX=$(echo "$VERSIONS_JSON" | python3 -c "
-          import sys, json
+          import sys, json, re
 
           data = json.load(sys.stdin)
-          versions = [v for v in data['versions'] if '-' not in v]
+          all_versions = data['versions']
 
-          # Filter to versions >= 14.0 (net8.0 target framework support)
-          def version_tuple(v):
-              parts = v.split('.')
-              return tuple(int(p) for p in parts[:2])
+          def parse_base(v):
+              return tuple(int(p) for p in v.split('-')[0].split('.'))
 
-          versions = [v for v in versions if version_tuple(v) >= (14, 0)]
+          # Separate stable and prerelease
+          stable = [v for v in all_versions if '-' not in v]
+          prerelease = [v for v in all_versions if '-' in v]
 
-          # Limit to max-versions (take latest N)
-          max_versions = ${{ inputs.max-versions }}
-          if max_versions > 0 and len(versions) > max_versions:
-              versions = versions[-max_versions:]
+          # Find highest stable base version
+          highest_stable = max(stable, key=parse_base) if stable else None
+          highest_stable_base = parse_base(highest_stable) if highest_stable else (0,)
 
-          lowest = versions[0] if versions else ''
+          # Include only betas whose base version >= highest stable (upcoming betas)
+          upcoming_betas = [v for v in prerelease if parse_base(v) >= highest_stable_base]
+
+          versions = sorted(stable + upcoming_betas, key=parse_base)
+
+          # Lowest stable version is used for compilation
+          lowest = stable[0] if stable else (versions[0] if versions else '')
+
           matrix = {'include': [{'version': v} for v in versions]}
-
           print(f'matrix={json.dumps(matrix)}')
           print(f'lowest-version={lowest}')
           ")
@@ -64,15 +63,18 @@ jobs:
           echo "$MATRIX" | head -1 >> "$GITHUB_OUTPUT"
           echo "$MATRIX" | tail -1 >> "$GITHUB_OUTPUT"
 
-          # Log the matrix for debugging
-          VERSION_COUNT=$(echo "$VERSIONS_JSON" | python3 -c "
+          # Log for debugging
+          echo "$VERSIONS_JSON" | python3 -c "
           import sys, json
           data = json.load(sys.stdin)
-          versions = [v for v in data['versions'] if '-' not in v]
-          versions = [v for v in versions if tuple(int(p) for p in v.split('.')[:2]) >= (14, 0)]
-          print(len(versions))
-          ")
-          echo "Found ${VERSION_COUNT} stable BC DevTools versions (net8.0+)"
+          stable = [v for v in data['versions'] if '-' not in v]
+          pre = [v for v in data['versions'] if '-' in v]
+          highest = max(stable, key=lambda v: tuple(int(p) for p in v.split('.'))  ) if stable else 'none'
+          upcoming = [v for v in pre if tuple(int(p) for p in v.split('-')[0].split('.')) >= tuple(int(p) for p in highest.split('.'))] if highest != 'none' else []
+          print(f'Stable versions: {len(stable)}, Upcoming betas: {len(upcoming)}, Total: {len(stable) + len(upcoming)}')
+          print(f'Highest stable: {highest}')
+          if upcoming: print(f'Upcoming betas: {upcoming}')
+          "
 
   build:
     runs-on: ubuntu-latest
@@ -178,13 +180,13 @@ jobs:
           pattern: test-results-*
           merge-multiple: true
 
-      - name: Summary
-        shell: bash
-        run: |
-          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Test results are available as artifacts on this workflow run." >> $GITHUB_STEP_SUMMARY
-
-          # Count TRX files and check for failures
-          TOTAL=$(find . -name "*.trx" | wc -l)
-          echo "Total test result files: ${TOTAL}" >> $GITHUB_STEP_SUMMARY
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v2
+        with:
+          name: BC DevTools Compatibility
+          path: "**/*.trx"
+          reporter: dotnet-trx
+          list-suites: failed
+          list-tests: failed
+          fail-on-error: true
+          fail-on-empty: true
