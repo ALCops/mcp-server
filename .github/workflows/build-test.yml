@@ -36,12 +36,15 @@ jobs:
           data = json.load(sys.stdin)
           all_versions = data['versions']
 
+          # Minimum supported major version (v16 and below are not supported)
+          MIN_MAJOR = 17
+
           def parse_base(v):
               return tuple(int(p) for p in v.split('-')[0].split('.'))
 
-          # Separate stable and prerelease
-          stable = [v for v in all_versions if '-' not in v]
-          prerelease = [v for v in all_versions if '-' in v]
+          # Separate stable and prerelease, filtering by minimum major version
+          stable = [v for v in all_versions if '-' not in v and parse_base(v)[0] >= MIN_MAJOR]
+          prerelease = [v for v in all_versions if '-' in v and parse_base(v)[0] >= MIN_MAJOR]
 
           # Find highest stable base version
           highest_stable = max(stable, key=parse_base) if stable else None
