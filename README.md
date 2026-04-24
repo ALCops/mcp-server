@@ -31,10 +31,10 @@ That's it. If you have the [AL Language](https://marketplace.visualstudio.com/it
 
 ## Requirements
 
-- [.NET 8.0](https://dotnet.microsoft.com/download/dotnet/8.0) SDK or Runtime
+- [.NET 10.0](https://dotnet.microsoft.com/download/dotnet/10.0) SDK or Runtime
 - [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension **v17.0 or higher**
 
-> **Note:** AL Language v16 and earlier are not supported. The BC Development Tools DLLs introduced breaking API changes in v17 that are not backwards compatible.
+> **Note:** AL Language v16 and earlier are not supported. The BC Development Tools DLLs introduced breaking API changes in v17 that are not backwards compatible. AL Language v18+ requires .NET 10.
 
 ## Tools
 

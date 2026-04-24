@@ -114,7 +114,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-build
-          path: tests/ALCops.Mcp.Tests/bin/Release/net8.0/
+          path: tests/ALCops.Mcp.Tests/bin/Release/net10.0/
           retention-days: 1
 
   test:

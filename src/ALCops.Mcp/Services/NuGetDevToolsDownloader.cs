@@ -68,10 +68,13 @@ public sealed class NuGetDevToolsDownloader
             if (bestVersion is null)
                 continue;
 
-            // The tools path is nested: <store>/<package>/<version>/<package>/<version>/tools/net8.0/any/
-            var toolsPath = Path.Combine(packageDir, bestVersion, packageName, bestVersion, "tools", "net8.0", "any");
-            if (Directory.Exists(toolsPath) && HasCopDlls(toolsPath))
-                return toolsPath;
+            // The tools path is nested: <store>/<package>/<version>/<package>/<version>/tools/<tfm>/any/
+            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+            {
+                var toolsPath = Path.Combine(packageDir, bestVersion, packageName, bestVersion, "tools", tfm, "any");
+                if (Directory.Exists(toolsPath) && HasCopDlls(toolsPath))
+                    return toolsPath;
+            }
         }
 
         return null;

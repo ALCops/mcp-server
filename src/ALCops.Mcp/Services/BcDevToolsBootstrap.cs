@@ -6,6 +6,9 @@ internal static class BcDevToolsBootstrap
 {
     private const string MarkerDll = "Microsoft.Dynamics.Nav.CodeAnalysis.dll";
 
+    // TFM subfolders to probe, ordered by preference (net10.0 first for v18+ support)
+    internal static readonly string[] TfmSubfolders = ["net10.0", "net8.0"];
+
     /// <summary>
     /// Resolves BC DevTools location and registers an assembly resolver.
     /// Must be called at the very top of Program.cs, before any BC types are referenced.
@@ -42,10 +45,13 @@ internal static class BcDevToolsBootstrap
         if (string.IsNullOrEmpty(envPath))
             return null;
 
-        // Standard layout: <root>/net8.0/
-        var net8 = Path.Combine(envPath, "net8.0");
-        if (HasMarkerDll(net8))
-            return net8;
+        // Standard layout: <root>/net10.0/ or <root>/net8.0/
+        foreach (var tfm in TfmSubfolders)
+        {
+            var tfmDir = Path.Combine(envPath, tfm);
+            if (HasMarkerDll(tfmDir))
+                return tfmDir;
+        }
 
         // Direct: DLLs in the path itself
         if (HasMarkerDll(envPath))
@@ -102,12 +108,19 @@ internal static class BcDevToolsBootstrap
 
     private static string? TryExeRelative()
     {
-        // From bin/Release/net8.0/ -> 5 levels up to repo root -> DevTools/net8.0/
         var exeDir = AppContext.BaseDirectory;
-        var devToolsNet8 = Path.GetFullPath(
+        var devToolsRoot = Path.GetFullPath(
             Path.Combine(exeDir, "..", "..", "..", "..", "..",
-                "Microsoft.Dynamics.BusinessCentral.Development.Tools", "net8.0"));
-        return HasMarkerDll(devToolsNet8) ? devToolsNet8 : null;
+                "Microsoft.Dynamics.BusinessCentral.Development.Tools"));
+
+        foreach (var tfm in TfmSubfolders)
+        {
+            var tfmDir = Path.Combine(devToolsRoot, tfm);
+            if (HasMarkerDll(tfmDir))
+                return tfmDir;
+        }
+
+        return null;
     }
 
     private static void RegisterAssemblyResolver(string devToolsDir)

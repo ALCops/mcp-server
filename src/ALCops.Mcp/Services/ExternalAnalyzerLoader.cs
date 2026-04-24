@@ -138,9 +138,13 @@ public sealed class ExternalAnalyzerLoader
         // 3. DevTools directory (CI/build environments)
         try
         {
-            var devToolsPath = Path.Combine(_devToolsLocator.GetDevToolsPath(), "net8.0", dllFileName);
-            if (File.Exists(devToolsPath))
-                return devToolsPath;
+            var devToolsBase = _devToolsLocator.GetDevToolsPath();
+            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+            {
+                var devToolsPath = Path.Combine(devToolsBase, tfm, dllFileName);
+                if (File.Exists(devToolsPath))
+                    return devToolsPath;
+            }
         }
         catch { /* DevTools not available */ }
 
@@ -256,7 +260,18 @@ public sealed class ExternalAnalyzerLoader
             if (_nugetToolsPath is not null)
                 searchPaths.Add(_nugetToolsPath);
 
-            try { searchPaths.Add(Path.Combine(_devToolsLocator.GetDevToolsPath(), "net8.0")); }
+            try {
+                var devToolsBase = _devToolsLocator.GetDevToolsPath();
+                foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+                {
+                    var tfmPath = Path.Combine(devToolsBase, tfm);
+                    if (Directory.Exists(tfmPath))
+                    {
+                        searchPaths.Add(tfmPath);
+                        break;
+                    }
+                }
+            }
             catch { /* DevTools not available */ }
 
             searchPaths.Add(AppContext.BaseDirectory);
