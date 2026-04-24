@@ -181,6 +181,10 @@ jobs:
     name: Test Report
     needs: test
     if: always()
+    permissions:
+      contents: read
+      actions: read
+      checks: write
 
     steps:
       - uses: actions/checkout@v6
