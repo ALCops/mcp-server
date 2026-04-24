@@ -68,10 +68,13 @@ public sealed class NuGetDevToolsDownloader
             if (bestVersion is null)
                 continue;
 
-            // The tools path is nested: <store>/<package>/<version>/<package>/<version>/tools/net8.0/any/
-            var toolsPath = Path.Combine(packageDir, bestVersion, packageName, bestVersion, "tools", "net8.0", "any");
-            if (Directory.Exists(toolsPath) && HasCopDlls(toolsPath))
-                return toolsPath;
+            // The tools path is nested: <store>/<package>/<version>/<package>/<version>/tools/<tfm>/any/
+            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+            {
+                var toolsPath = Path.Combine(packageDir, bestVersion, packageName, bestVersion, "tools", tfm, "any");
+                if (Directory.Exists(toolsPath) && HasCopDlls(toolsPath))
+                    return toolsPath;
+            }
         }
 
         return null;
@@ -122,18 +125,30 @@ public sealed class NuGetDevToolsDownloader
 
         Directory.CreateDirectory(extractDir);
 
-        // Extract DLLs from tools/net8.0/any/
-        var prefix = "tools/net8.0/any/";
+        // Package layout varies across versions and platform-specific vs generic packages:
+        //   generic:  tools/net8.0/any/  or  tools/net10.0/any/
+        //   platform: lib/net8.0/        or  lib/net10.0/
+        string[] knownPrefixes = ["tools/net8.0/any/", "tools/net10.0/any/", "lib/net8.0/", "lib/net10.0/"];
+
         foreach (var entry in archive.Entries)
         {
-            if (!entry.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(entry.Name))
                 continue;
 
-            if (string.IsNullOrEmpty(entry.Name))
-                continue; // Directory entry
-
-            // Only extract DLL files
             if (!entry.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var matchesKnownPrefix = false;
+            foreach (var prefix in knownPrefixes)
+            {
+                if (entry.FullName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchesKnownPrefix = true;
+                    break;
+                }
+            }
+
+            if (!matchesKnownPrefix)
                 continue;
 
             var destPath = Path.Combine(extractDir, entry.Name);

@@ -29,6 +29,13 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 That's it. If you have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension installed, the server picks up the BC Development Tools automatically.
 
+## Requirements
+
+- [.NET 10.0](https://dotnet.microsoft.com/download/dotnet/10.0) SDK or Runtime
+- [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension **v17.0 or higher**
+
+> **Note:** AL Language v16 and earlier are not supported. The BC Development Tools DLLs introduced breaking API changes in v17 that are not backwards compatible. AL Language v18+ requires .NET 10.
+
 ## Tools
 
 4 tools, ~1,020 tokens of schema overhead.

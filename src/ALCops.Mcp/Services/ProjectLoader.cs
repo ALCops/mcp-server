@@ -80,7 +80,15 @@ public sealed class ProjectLoader
         try
         {
             var devToolsPath = _devToolsLocator.GetDevToolsPath();
-            packagePaths.Add(Path.Combine(devToolsPath, "net8.0"));
+            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+            {
+                var tfmPath = Path.Combine(devToolsPath, tfm);
+                if (Directory.Exists(tfmPath))
+                {
+                    packagePaths.Add(tfmPath);
+                    break;
+                }
+            }
         }
         catch
         {

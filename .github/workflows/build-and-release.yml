@@ -41,7 +41,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Setup BC DevTools
         run: |
@@ -50,8 +50,11 @@ jobs:
           echo "BC DevTools version: ${VERSION} (lowest, matching test build)"
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
-            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+          # Package layout varies across versions; extract from all known paths.
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net10.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net10.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
           ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
 
       - name: Build

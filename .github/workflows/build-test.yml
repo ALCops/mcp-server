@@ -36,12 +36,15 @@ jobs:
           data = json.load(sys.stdin)
           all_versions = data['versions']
 
+          # Minimum supported major version (v16 and below are not supported)
+          MIN_MAJOR = 17
+
           def parse_base(v):
               return tuple(int(p) for p in v.split('-')[0].split('.'))
 
-          # Separate stable and prerelease
-          stable = [v for v in all_versions if '-' not in v]
-          prerelease = [v for v in all_versions if '-' in v]
+          # Separate stable and prerelease, filtering by minimum major version
+          stable = [v for v in all_versions if '-' not in v and parse_base(v)[0] >= MIN_MAJOR]
+          prerelease = [v for v in all_versions if '-' in v and parse_base(v)[0] >= MIN_MAJOR]
 
           # Find highest stable base version
           highest_stable = max(stable, key=parse_base) if stable else None
@@ -87,7 +90,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Setup BC DevTools
         run: |
@@ -96,9 +99,12 @@ jobs:
           echo "Downloading BC DevTools v${VERSION} (lowest) for compilation..."
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
-          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
-            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+          # Package layout varies across versions; extract from all known paths.
+          # Later extractions overwrite earlier ones (-o), so net10.0 wins when both exist.
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net10.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net10.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null || true
           ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
 
       - name: Build
@@ -108,7 +114,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-build
-          path: tests/ALCops.Mcp.Tests/bin/Release/net8.0/
+          path: tests/ALCops.Mcp.Tests/bin/Release/net10.0/
           retention-days: 1
 
   test:
@@ -125,7 +131,7 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Download test build
         uses: actions/download-artifact@v4
@@ -140,9 +146,12 @@ jobs:
           echo "Downloading BC DevTools v${VERSION}..."
           mkdir -p /tmp/bcdevtools
           curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
-          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
-          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
-            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
+          # Package layout varies across versions; extract from all known paths.
+          # Later extractions overwrite earlier ones (-o), so net10.0 wins when both exist.
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net10.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/ 2>/dev/null || true
+          unzip -joq /tmp/bcdevtools.nupkg "lib/net10.0/*.dll" -d /tmp/bcdevtools/ 2>/dev/null || true
 
       - name: Replace BC DevTools DLLs in test build
         run: |
@@ -172,8 +181,14 @@ jobs:
     name: Test Report
     needs: test
     if: always()
+    permissions:
+      contents: read
+      actions: read
+      checks: write
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download all test results
         uses: actions/download-artifact@v4
         with:

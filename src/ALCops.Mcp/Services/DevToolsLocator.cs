@@ -21,7 +21,7 @@ public sealed class DevToolsLocator
             if (ValidateDevToolsPath(_bootstrapPath))
                 return _cachedPath = _bootstrapPath;
 
-            // Bootstrap may have resolved to the net8.0/ subdir — check parent
+            // Bootstrap may have resolved to a TFM subdir (net10.0/, net8.0/) — check parent
             var parent = Path.GetDirectoryName(_bootstrapPath);
             if (parent is not null && ValidateDevToolsPath(parent))
                 return _cachedPath = parent;
@@ -53,6 +53,11 @@ public sealed class DevToolsLocator
 
     private static bool ValidateDevToolsPath(string path)
     {
-        return File.Exists(Path.Combine(path, "net8.0", "Microsoft.Dynamics.Nav.CodeAnalysis.dll"));
+        foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
+        {
+            if (File.Exists(Path.Combine(path, tfm, "Microsoft.Dynamics.Nav.CodeAnalysis.dll")))
+                return true;
+        }
+        return false;
     }
 }
