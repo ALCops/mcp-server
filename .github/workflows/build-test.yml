@@ -1,0 +1,192 @@
+name: Build & Test
+
+on:
+  workflow_call:
+    outputs:
+      matrix:
+        description: "The test matrix JSON (for downstream jobs)"
+        value: ${{ jobs.setup.outputs.matrix }}
+      lowest-version:
+        description: "The lowest stable BC DevTools version (used for compilation)"
+        value: ${{ jobs.setup.outputs.lowest-version }}
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    name: Setup Test Matrix
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      lowest-version: ${{ steps.matrix.outputs.lowest-version }}
+
+    steps:
+      - name: Query NuGet for available BC DevTools versions
+        id: matrix
+        shell: bash
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSIONS_JSON=$(curl -sf "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/index.json")
+
+          MATRIX=$(echo "$VERSIONS_JSON" | python3 -c "
+          import sys, json, re
+
+          data = json.load(sys.stdin)
+          all_versions = data['versions']
+
+          def parse_base(v):
+              return tuple(int(p) for p in v.split('-')[0].split('.'))
+
+          # Separate stable and prerelease
+          stable = [v for v in all_versions if '-' not in v]
+          prerelease = [v for v in all_versions if '-' in v]
+
+          # Find highest stable base version
+          highest_stable = max(stable, key=parse_base) if stable else None
+          highest_stable_base = parse_base(highest_stable) if highest_stable else (0,)
+
+          # Include only betas whose base version >= highest stable (upcoming betas)
+          upcoming_betas = [v for v in prerelease if parse_base(v) >= highest_stable_base]
+
+          versions = sorted(stable + upcoming_betas, key=parse_base)
+
+          # Lowest stable version is used for compilation
+          lowest = stable[0] if stable else (versions[0] if versions else '')
+
+          matrix = {'include': [{'version': v} for v in versions]}
+          print(f'matrix={json.dumps(matrix)}')
+          print(f'lowest-version={lowest}')
+          ")
+
+          echo "$MATRIX" | head -1 >> "$GITHUB_OUTPUT"
+          echo "$MATRIX" | tail -1 >> "$GITHUB_OUTPUT"
+
+          # Log for debugging
+          echo "$VERSIONS_JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          stable = [v for v in data['versions'] if '-' not in v]
+          pre = [v for v in data['versions'] if '-' in v]
+          highest = max(stable, key=lambda v: tuple(int(p) for p in v.split('.'))  ) if stable else 'none'
+          upcoming = [v for v in pre if tuple(int(p) for p in v.split('-')[0].split('.')) >= tuple(int(p) for p in highest.split('.'))] if highest != 'none' else []
+          print(f'Stable versions: {len(stable)}, Upcoming betas: {len(upcoming)}, Total: {len(stable) + len(upcoming)}')
+          print(f'Highest stable: {highest}')
+          if upcoming: print(f'Upcoming betas: {upcoming}')
+          "
+
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    needs: setup
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup BC DevTools
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSION="${{ needs.setup.outputs.lowest-version }}"
+          echo "Downloading BC DevTools v${VERSION} (lowest) for compilation..."
+          mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
+          curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
+          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/
+          ls Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build
+          path: tests/ALCops.Mcp.Tests/bin/Release/net8.0/
+          retention-days: 1
+
+  test:
+    runs-on: ubuntu-latest
+    name: "Test (v${{ matrix.version }})"
+    needs: [setup, build]
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+
+    steps:
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Download test build
+        uses: actions/download-artifact@v4
+        with:
+          name: test-build
+          path: test-build
+
+      - name: Download BC DevTools v${{ matrix.version }}
+        run: |
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          VERSION="${{ matrix.version }}"
+          echo "Downloading BC DevTools v${VERSION}..."
+          mkdir -p /tmp/bcdevtools
+          curl -sL "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/${VERSION}/${PACKAGE}.${VERSION}.nupkg" -o /tmp/bcdevtools.nupkg
+          # Package layout varies: tools/net8.0/any/ (v16) or lib/net8.0/ (v17+)
+          unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
+            || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
+
+      - name: Replace BC DevTools DLLs in test build
+        run: |
+          # Overwrite the compile-time DLLs with the target version's DLLs.
+          # The binary was compiled against the lowest version; we now test it
+          # against v${{ matrix.version }} to detect runtime incompatibilities.
+          echo "Replacing BC DevTools DLLs in test-build/ with v${{ matrix.version }}..."
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.CodeAnalysis.dll test-build/
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll test-build/
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.Analyzers.Common.dll test-build/ 2>/dev/null || true
+
+      - name: Test
+        run: |
+          echo "Testing pre-built binary with BC DevTools v${{ matrix.version }}"
+          dotnet test test-build/ALCops.Mcp.Tests.dll --no-build --verbosity normal --logger "trx;LogFileName=results-${{ matrix.version }}.trx"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.version }}
+          path: "**/*.trx"
+          retention-days: 7
+
+  report:
+    runs-on: ubuntu-latest
+    name: Test Report
+    needs: test
+    if: always()
+
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v2
+        with:
+          name: BC DevTools Compatibility
+          path: "**/*.trx"
+          reporter: dotnet-trx
+          list-suites: failed
+          list-tests: failed
+          fail-on-error: true
+          fail-on-empty: true

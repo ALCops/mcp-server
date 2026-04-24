@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <LangVersion>Latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <BcDevToolsDir Condition="'$(BcDevToolsDir)'==''">../../Microsoft.Dynamics.BusinessCentral.Development.Tools</BcDevToolsDir>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+        <PackageReference Include="xunit" Version="2.9.3" />
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../src/ALCops.Mcp/ALCops.Mcp.csproj" />
+    </ItemGroup>
+
+    <!-- BC Dev Tools — needed for integration tests that exercise ProjectLoader -->
+    <ItemGroup>
+        <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis">
+            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll</HintPath>
+            <Private>True</Private>
+        </Reference>
+        <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces">
+            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll</HintPath>
+            <Private>True</Private>
+        </Reference>
+    </ItemGroup>
+
+    <!-- Copy test fixture files to output -->
+    <ItemGroup>
+        <None Include="Fixtures/**/*" CopyToOutputDirectory="PreserveNewest" LinkBase="Fixtures" />
+    </ItemGroup>
+</Project>
