@@ -142,9 +142,17 @@ jobs:
           unzip -joq /tmp/bcdevtools.nupkg "tools/net8.0/any/*.dll" -d /tmp/bcdevtools/ 2>/dev/null \
             || unzip -joq /tmp/bcdevtools.nupkg "lib/net8.0/*.dll" -d /tmp/bcdevtools/
 
+      - name: Replace BC DevTools DLLs in test build
+        run: |
+          # Overwrite the compile-time DLLs with the target version's DLLs.
+          # The binary was compiled against the lowest version; we now test it
+          # against v${{ matrix.version }} to detect runtime incompatibilities.
+          echo "Replacing BC DevTools DLLs in test-build/ with v${{ matrix.version }}..."
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.CodeAnalysis.dll test-build/
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll test-build/
+          cp /tmp/bcdevtools/Microsoft.Dynamics.Nav.Analyzers.Common.dll test-build/ 2>/dev/null || true
+
       - name: Test
-        env:
-          BCDEVELOPMENTTOOLSPATH: /tmp/bcdevtools
         run: |
           echo "Testing pre-built binary with BC DevTools v${{ matrix.version }}"
           dotnet test test-build/ALCops.Mcp.Tests.dll --no-build --verbosity normal --logger "trx;LogFileName=results-${{ matrix.version }}.trx"
