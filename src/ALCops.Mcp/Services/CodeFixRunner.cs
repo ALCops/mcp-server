@@ -173,11 +173,16 @@ public sealed class CodeFixRunner
         var compilationWithAnalyzers = new CompilationWithAnalyzers(
             compilation, analyzers, null!, ct);
 
-        var allDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
+        var rawDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
+
+        // Apply pragma suppression filtering (same as DiagnosticsRunner)
+        var effectiveDiagnostics = CompilationWithAnalyzers
+            .GetEffectiveDiagnostics(rawDiagnostics, compilation);
 
         // Filter to the target file and diagnostic ID
         var documentPath = document.FilePath ?? "";
-        var diagnostics = allDiagnostics
+        var diagnostics = effectiveDiagnostics
+            .Where(d => !d.IsSuppressed)
             .Where(d => d.Id == diagnosticId
                 && d.Location.SourceTree?.FilePath is string fp
                 && Path.GetFullPath(fp).Equals(Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))

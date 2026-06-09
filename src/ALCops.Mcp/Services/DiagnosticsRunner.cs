@@ -45,14 +45,22 @@ public sealed class DiagnosticsRunner
         var compilationWithAnalyzers = new CompilationWithAnalyzers(
             compilation, analyzers, null!, ct);
 
-        var allDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
+        var rawDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
+
+        // GetAnalyzerDiagnosticsAsync returns raw diagnostics without pragma suppression.
+        // Apply CompilationOptions filtering to honor #pragma warning disable/restore.
+        var effectiveDiagnostics = CompilationWithAnalyzers
+            .GetEffectiveDiagnostics(rawDiagnostics, compilation);
 
         // Apply filters
         var results = new List<DiagnosticResult>();
-        foreach (var diagnostic in allDiagnostics)
+        foreach (var diagnostic in effectiveDiagnostics)
         {
             if (ct.IsCancellationRequested)
                 break;
+
+            if (diagnostic.IsSuppressed)
+                continue;
 
             // Ruleset filter: suppress diagnostics set to None, override severity for others
             var effectiveSeverity = diagnostic.Severity;
