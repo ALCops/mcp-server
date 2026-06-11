@@ -21,6 +21,13 @@ internal static class BcDevToolsBootstrap
         {
             RegisterAssemblyResolver(path);
             Console.Error.WriteLine($"BC DevTools: {path}");
+            try
+            {
+                var version = System.Diagnostics.FileVersionInfo
+                    .GetVersionInfo(Path.Combine(path, MarkerDll));
+                Console.Error.WriteLine($"BC DevTools version: {version.FileVersion}");
+            }
+            catch { /* non-critical */ }
         }
         else
         {

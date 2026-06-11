@@ -62,6 +62,9 @@ public sealed class DiagnosticsRunner
             if (diagnostic.IsSuppressed)
                 continue;
 
+            if (diagnostic.Id == "AD0001")
+                Console.Error.WriteLine($"Analyzer exception: {diagnostic.GetMessage()}");
+
             // Ruleset filter: suppress diagnostics set to None, override severity for others
             var effectiveSeverity = diagnostic.Severity;
             if (provider is AnalyzerSet analyzerSet && analyzerSet.RuleActions is { } ruleActions)
