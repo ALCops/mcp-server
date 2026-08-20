@@ -45,7 +45,7 @@ That's it. If you have the [AL Language](https://marketplace.visualstudio.com/it
 | `analyze` | Run analyzers on an AL project or file. Returns diagnostics with severity, location, and code fix availability. |
 | `list_rules` | List all available analyzer rules with metadata (ID, title, severity, category, cop). |
 | `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
-| `apply_fix` | Apply a code fix and return the modified source — does **not** write to disk. |
+| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk. |
 
 ## Analyzers
 
