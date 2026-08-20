@@ -27,7 +27,7 @@ jobs:
         id: matrix
         shell: bash
         run: |
-          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools"
           VERSIONS_JSON=$(curl -sf "https://api.nuget.org/v3-flatcontainer/${PACKAGE}/index.json")
 
           MATRIX=$(echo "$VERSIONS_JSON" | python3 -c "
@@ -94,7 +94,7 @@ jobs:
 
       - name: Setup BC DevTools
         run: |
-          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools"
           VERSION="${{ needs.setup.outputs.lowest-version }}"
           echo "Downloading BC DevTools v${VERSION} (lowest) for compilation..."
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
@@ -141,7 +141,7 @@ jobs:
 
       - name: Download BC DevTools v${{ matrix.version }}
         run: |
-          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools"
           VERSION="${{ matrix.version }}"
           echo "Downloading BC DevTools v${VERSION}..."
           mkdir -p /tmp/bcdevtools
