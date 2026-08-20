@@ -46,7 +46,7 @@ jobs:
 
       - name: Setup BC DevTools
         run: |
-          PACKAGE="microsoft.dynamics.businesscentral.development.tools.linux"
+          PACKAGE="microsoft.dynamics.businesscentral.development.tools"
           VERSION="${{ needs.build-and-test.outputs.lowest-version }}"
           echo "BC DevTools version: ${VERSION} (lowest, matching test build)"
           mkdir -p Microsoft.Dynamics.BusinessCentral.Development.Tools/net8.0
