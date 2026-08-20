@@ -376,9 +376,10 @@ public sealed class CodeFixRunner
         var compilationWithAnalyzers = new CompilationWithAnalyzers(compilation, analyzers, null!, ct);
         var rawDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
         var effectiveDiagnostics = CompilationWithAnalyzers.GetEffectiveDiagnostics(rawDiagnostics, compilation);
+        var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
 
         return [.. effectiveDiagnostics
-            .Where(d => !d.IsSuppressed && d.Id == diagnosticId)
+            .Where(d => !d.IsSuppressed && d.Id == diagnosticId && !RulesetFilter.IsSuppressed(ruleActions, d.Id, out _))
             .Where(d => filePath is null
                 || (d.Location.SourceTree?.FilePath is string fp
                     && Path.GetFullPath(fp).Equals(filePath, StringComparison.OrdinalIgnoreCase)))];
@@ -414,9 +415,10 @@ public sealed class CodeFixRunner
         var compilationWithAnalyzers = new CompilationWithAnalyzers(compilation, analyzers, null!, ct);
         var rawDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
         var effectiveDiagnostics = CompilationWithAnalyzers.GetEffectiveDiagnostics(rawDiagnostics, compilation);
+        var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
 
         var remaining = effectiveDiagnostics
-            .Where(d => !d.IsSuppressed && d.Id == diagnosticId)
+            .Where(d => !d.IsSuppressed && d.Id == diagnosticId && !RulesetFilter.IsSuppressed(ruleActions, d.Id, out _))
             .Where(d => filePath is null
                 || (d.Location.SourceTree?.FilePath is string fp
                     && Path.GetFullPath(fp).Equals(filePath, StringComparison.OrdinalIgnoreCase)));
@@ -495,10 +497,13 @@ public sealed class CodeFixRunner
         var effectiveDiagnostics = CompilationWithAnalyzers
             .GetEffectiveDiagnostics(rawDiagnostics, compilation);
 
+        // Apply ruleset suppression (RuleAction.None), same as DiagnosticsRunner
+        var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
+
         // Filter to the target file and diagnostic ID
         var documentPath = document.FilePath ?? "";
         var diagnostics = effectiveDiagnostics
-            .Where(d => !d.IsSuppressed)
+            .Where(d => !d.IsSuppressed && !RulesetFilter.IsSuppressed(ruleActions, d.Id, out _))
             .Where(d => d.Id == diagnosticId
                 && d.Location.SourceTree?.FilePath is string fp
                 && Path.GetFullPath(fp).Equals(Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))

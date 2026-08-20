@@ -66,21 +66,10 @@ public sealed class DiagnosticsRunner
                 Console.Error.WriteLine($"Analyzer exception: {diagnostic.GetMessage()}");
 
             // Ruleset filter: suppress diagnostics set to None, override severity for others
-            var effectiveSeverity = diagnostic.Severity;
-            if (provider is AnalyzerSet analyzerSet && analyzerSet.RuleActions is { } ruleActions)
-            {
-                if (ruleActions.TryGetValue(diagnostic.Id, out var action))
-                {
-                    if (action == RuleAction.None)
-                        continue;
-                    if (action != RuleAction.Default)
-                        effectiveSeverity = MapRuleActionToSeverity(action, diagnostic.Severity);
-                }
-                else if (ruleActions.TryGetValue("*", out var generalAction) && generalAction == RuleAction.None)
-                {
-                    continue;
-                }
-            }
+            var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
+            if (RulesetFilter.IsSuppressed(ruleActions, diagnostic.Id, out var severityOverride))
+                continue;
+            var effectiveSeverity = severityOverride ?? diagnostic.Severity;
 
             // Severity filter (applied after ruleset overrides)
             if (minSeverity.HasValue && effectiveSeverity < minSeverity.Value)
@@ -109,15 +98,6 @@ public sealed class DiagnosticsRunner
 
         return results;
     }
-
-    private static DiagnosticSeverity MapRuleActionToSeverity(RuleAction action, DiagnosticSeverity fallback) => action switch
-    {
-        RuleAction.Error => DiagnosticSeverity.Error,
-        RuleAction.Warning => DiagnosticSeverity.Warning,
-        RuleAction.Info => DiagnosticSeverity.Info,
-        RuleAction.Hidden => DiagnosticSeverity.Hidden,
-        _ => fallback
-    };
 
     private static DiagnosticResult MapDiagnostic(Diagnostic diagnostic, string copName, IAnalyzerProvider provider, DiagnosticSeverity effectiveSeverity)
     {

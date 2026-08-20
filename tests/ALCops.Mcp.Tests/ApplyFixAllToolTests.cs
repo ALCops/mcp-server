@@ -44,9 +44,9 @@ public class ApplyFixAllToolTests
         public CodeFixRunner CodeFixRunner { get; }
         public ProjectAnalyzerResolver AnalyzerResolver { get; }
 
-        public TestContext()
+        public TestContext(string fixtureName = "FixAllProject")
         {
-            var fixtureSource = GetFixturePath("FixAllProject");
+            var fixtureSource = GetFixturePath(fixtureName);
             ProjectPath = Path.Combine(Path.GetTempPath(), $"alcops-fixall-test-{Guid.NewGuid():N}");
             CopyDirectory(fixtureSource, ProjectPath);
 
@@ -191,5 +191,26 @@ public class ApplyFixAllToolTests
 
         Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_RulesetSuppressesRule_TreatsItAsZeroDiagnostics()
+    {
+        // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None",
+        // even though PageA.al contains a redundant ApplicationArea occurrence.
+        using var ctx = new TestContext("FixAllRulesetProject");
+        var pageAPath = Path.Combine(ctx.ProjectPath, "PageA.al");
+        var originalPageA = ctx.ReadFile("PageA.al");
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", scope: "document", filePath: pageAPath);
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+
+        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
+        Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
     }
 }

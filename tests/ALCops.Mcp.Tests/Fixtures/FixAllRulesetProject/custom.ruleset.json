@@ -1,0 +1,7 @@
+{
+    "name": "Fix-all ruleset test",
+    "description": "Suppresses LC0020 so apply_fix_all treats it as having zero occurrences.",
+    "rules": [
+        { "id": "LC0020", "action": "None" }
+    ]
+}
