@@ -88,4 +88,49 @@ public class ApplyFixToolTests
         foreach (var file in Directory.GetFiles(sourceDir))
             File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)));
     }
+
+    [Fact]
+    public async Task GetFixes_RulesetSuppressesRule_ReturnsNoFixes()
+    {
+        // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None". Even though
+        // PageA.al still has a redundant ApplicationArea, get_fixes must not offer a fix for it
+        // (CodeFixRunner.FindDiagnosticAsync must honor ruleset suppression, same as DiagnosticsRunner).
+        var fixtureSource = GetFixturePath("FixAllRulesetProject");
+        var tempProjectPath = Path.Combine(Path.GetTempPath(), $"alcops-ruleset-getfixes-test-{Guid.NewGuid():N}");
+        CopyDirectory(fixtureSource, tempProjectPath);
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "PageA.al");
+
+            var sessionManager = new ProjectSessionManager(new ProjectLoader(new DevToolsLocator()));
+            var registry = new AnalyzerRegistry();
+            var codeFixRunner = new CodeFixRunner(registry);
+            var analyzerResolver = CreateAnalyzerResolver(registry);
+
+            var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
+
+            // Control: with the bare registry (no ruleset applied), the same location must
+            // resolve to a real fixable diagnostic — proving the location itself is correct and
+            // that the ruleset (not a location mismatch) is what suppresses the result below.
+            const int line = 11, column = 17;
+            var controlFixes = await codeFixRunner.GetFixesAsync(
+                session, filePath, "LC0020", line, column, analyzerProvider: registry);
+            Assert.True(controlFixes.Count > 0,
+                "Expected a fixable LC0020 at line 11, column 17 with no ruleset applied — fixture or location may have changed.");
+
+            // With the resolved AnalyzerSet (loads FixAllRulesetProject's custom.ruleset.json,
+            // which sets LC0020 to "None"), the same location must yield no fixes.
+            var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
+            var fixes = await codeFixRunner.GetFixesAsync(
+                session, filePath, "LC0020", line, column, analyzerProvider: analyzerSet);
+
+            Assert.Empty(fixes);
+        }
+        finally
+        {
+            if (Directory.Exists(tempProjectPath))
+                Directory.Delete(tempProjectPath, recursive: true);
+        }
+    }
 }
