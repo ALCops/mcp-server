@@ -32,7 +32,7 @@ This is an MCP (Model Context Protocol) server packaged as a .NET 8 global tool 
 
 ### Key layers
 
-- **Tools/** — MCP tool endpoints. Each class is annotated with `[McpServerToolType]` and methods with `[McpServerTool]`. Tools are auto-discovered via `WithToolsFromAssembly()`. The four tools: `analyze`, `list_rules`, `get_fixes`, `apply_fix`.
+- **Tools/** — MCP tool endpoints. Each class is annotated with `[McpServerToolType]` and methods with `[McpServerTool]`. Tools are auto-discovered via `WithToolsFromAssembly()`. The five tools: `analyze`, `list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`.
 - **Services/** — Core logic. Services are registered as singletons in `McpHost`.
   - `ProjectSessionManager` — Caches loaded AL project workspaces keyed by path. `GetOrLoadProjectAsync` is the main entry point tools use.
   - `AnalyzerRegistry` — Loads ALCops' 6 built-in cops at startup via reflection. Indexes analyzers, code fix providers, and diagnostic descriptors.
@@ -45,7 +45,7 @@ This is an MCP (Model Context Protocol) server packaged as a .NET 8 global tool 
 
 - All tool methods are `static async Task<string>`, receiving DI services as parameters.
 - Tools return JSON-serialized results. Errors are caught and returned as `{ error, message }` JSON, not thrown.
-- `apply_fix` writes to disk and reloads the project session; the other three tools are read-only.
+- `apply_fix` writes to disk and reloads the project session; `apply_fix_all` does the same across every occurrence of a rule (unless `dryRun`); the other two tools are read-only.
 
 ## Conventions
 

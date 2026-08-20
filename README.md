@@ -38,7 +38,7 @@ That's it. If you have the [AL Language](https://marketplace.visualstudio.com/it
 
 ## Tools
 
-4 tools, ~1,020 tokens of schema overhead.
+5 tools, ~1,020 tokens of schema overhead.
 
 | Tool | Description |
 |------|-------------|
@@ -46,6 +46,7 @@ That's it. If you have the [AL Language](https://marketplace.visualstudio.com/it
 | `list_rules` | List all available analyzer rules with metadata (ID, title, severity, category, cop). |
 | `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
 | `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk. |
+| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. |
 
 ## Analyzers
 
