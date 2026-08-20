@@ -1,0 +1,122 @@
+name: Bug Report
+description: Report a bug in the ALCops MCP server
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+
+        Before you create a new issue, please:
+        🔎 **Search [existing issues](https://github.com/ALCops/mcp-server/issues)** to avoid duplicates.
+        ✅ **Try reproducing on the [latest version](https://www.nuget.org/packages/ALCops.Mcp)** of ALCops.Mcp (`dotnet tool update -g ALCops.Mcp`).
+
+        > [!IMPORTANT]
+        > Is your issue about an **analyzer rule or diagnostic** (false positive, false negative, or crash in PlatformCop, LinterCop, ApplicationCop, ...)?
+        > Those live in a different repository — please file it in [ALCops/Analyzers](https://github.com/ALCops/Analyzers/issues/new/choose) instead.
+        > This repository is only for the MCP server itself (installation, tools, and communication with MCP clients).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+      placeholder: Describe the bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Steps to reproduce the behavior, including the MCP tool or prompt used if applicable.
+      placeholder: |
+        1. Configure the MCP server in '...'
+        2. Ask the assistant to '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+      placeholder: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+      placeholder: Actual behavior
+    validations:
+      required: true
+
+  - type: input
+    id: mcp-server-version
+    attributes:
+      label: ALCops.Mcp version
+      description: Find it with `dotnet tool list -g`.
+      placeholder: e.g., 1.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: The MCP client (AI assistant) you are using, including its version if known.
+      placeholder: e.g., VS Code Copilot, Claude Code, Claude Desktop, Cursor
+    validations:
+      required: true
+
+  - type: input
+    id: dotnet-version
+    attributes:
+      label: .NET version
+      description: Find it with `dotnet --version`.
+      placeholder: e.g., 10.0.100
+    validations:
+      required: true
+
+  - type: input
+    id: al-language-extension-version
+    attributes:
+      label: AL Language extension version
+      description: The server picks up the BC Development Tools from the AL Language VS Code extension, if installed.
+      placeholder: e.g., 17.0.1856043
+    validations:
+      required: false
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      description: Which operating system are you using?
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant output, error messages, or MCP client logs. This will be automatically formatted as code.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any additional information that might help, such as your MCP server configuration or screenshots.
+      placeholder: Additional context
+    validations:
+      required: false

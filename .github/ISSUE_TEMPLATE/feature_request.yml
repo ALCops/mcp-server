@@ -1,0 +1,48 @@
+name: Feature Request
+description: Suggest an idea or improvement for the ALCops MCP server
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement!
+
+        Before you create a new issue, please:
+        🔎 **Search [existing issues](https://github.com/ALCops/mcp-server/issues)** to avoid duplicates.
+        💡 **Want to suggest a new analyzer rule?** Please open a [Discussion in the Analyzers repository](https://github.com/ALCops/Analyzers/discussions) instead. This repository is only for the MCP server itself.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem does this solve? Describe the situation that prompted this request.
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen?
+      placeholder: Describe your proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any alternative solutions or workarounds you've considered.
+      placeholder: Alternatives considered
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Any additional information, screenshots, or examples.
+      placeholder: Additional context
+    validations:
+      required: false

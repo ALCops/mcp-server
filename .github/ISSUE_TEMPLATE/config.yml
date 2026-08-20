@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🐛 Analyzer bug (PlatformCop, LinterCop, ApplicationCop, ...)
+    url: https://github.com/ALCops/Analyzers/issues/new/choose
+    about: False positive, false negative, or crash in an analyzer rule? That's the Analyzers repository, not the MCP server.
+  - name: 🧩 VS Code extension issue
+    url: https://github.com/ALCops/vscode-extension/issues/new/choose
+    about: Issues with the ALCops VS Code extension belong in its own repository.
+  - name: 🚀 Azure DevOps extension issue
+    url: https://github.com/ALCops/azure-devops-extension/issues/new/choose
+    about: Issues with the ALCops Azure DevOps pipeline extension belong in its own repository.
+  - name: 📖 Documentation issue
+    url: https://github.com/ALCops/alcops.dev/issues/new/choose
+    about: Found something wrong or missing on alcops.dev? Report it in the website repository.
