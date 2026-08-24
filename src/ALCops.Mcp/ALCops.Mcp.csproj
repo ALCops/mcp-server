@@ -5,7 +5,12 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <LangVersion>Latest</LangVersion>
         <Nullable>enable</Nullable>
-        <BcDevToolsDir Condition="'$(BcDevToolsDir)'==''">../../Microsoft.Dynamics.BusinessCentral.Development.Tools</BcDevToolsDir>
+
+        <!-- BC DevTools compile floor. Deliberately the lowest supported stable release: the server
+             is compiled against the oldest SDK it must support and runs against whatever newer SDK
+             the user has installed. CI overrides these to run its version matrix. -->
+        <BcDevToolsVersion Condition="'$(BcDevToolsVersion)'==''">17.0.34.45391</BcDevToolsVersion>
+        <BcToolsTfm Condition="'$(BcToolsTfm)'==''">net8.0</BcToolsTfm>
 
         <!-- Dotnet tool packaging -->
         <PackAsTool>true</PackAsTool>
@@ -26,33 +31,35 @@
         <PackageReference Include="ModelContextProtocol" Version="0.9.0-preview.2" />
         <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
         <PackageReference Include="System.Composition.AttributedModel" Version="8.0.0" />
-        <PackageReference Include="ALCops.Analyzers" Version="1.0.1" PrivateAssets="none" />
     </ItemGroup>
 
-    <!-- BC Dev Tools — needed at compile time, excluded from package by ExcludeBcDevToolsFromPublish.
-         At runtime, BcDevToolsBootstrap resolves them from VS Code AL extension or NuGet. -->
+    <!-- BC DevTools: restored into the global packages folder but never referenced as a package.
+         The package is DotnetTool+Template only (no `Dependency` package type, no lib/ folder), so
+         NuGet rejects a PackageReference to it; PackageDownload sidesteps that and gives us a
+         stable path to hint at. Exact-version bracket syntax is required by PackageDownload. -->
+    <ItemGroup>
+        <PackageDownload Include="Microsoft.Dynamics.BusinessCentral.Development.Tools" Version="[$(BcDevToolsVersion)]" />
+    </ItemGroup>
+
+    <!-- Compile-time only. Private=false keeps Microsoft's proprietary DLLs out of our build output
+         and therefore out of the published package — this is the redistribution guard. At runtime
+         BcToolsLocator finds them in the user's own toolchain and registers an assembly resolver. -->
+    <PropertyGroup>
+        <BcToolsPath>$(NuGetPackageRoot)microsoft.dynamics.businesscentral.development.tools/$(BcDevToolsVersion)/tools/$(BcToolsTfm)/any/</BcToolsPath>
+    </PropertyGroup>
+
     <ItemGroup>
         <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis">
-            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll</HintPath>
-            <Private>True</Private>
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.CodeAnalysis.dll</HintPath>
+            <Private>false</Private>
         </Reference>
         <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces">
-            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll</HintPath>
-            <Private>True</Private>
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll</HintPath>
+            <Private>false</Private>
         </Reference>
         <Reference Include="Microsoft.Dynamics.Nav.Analyzers.Common">
-            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.Analyzers.Common.dll</HintPath>
-            <Private>True</Private>
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.Analyzers.Common.dll</HintPath>
+            <Private>false</Private>
         </Reference>
     </ItemGroup>
-
-    <!-- Exclude proprietary BC DevTools DLLs from the dotnet tool package -->
-    <Target Name="ExcludeBcDevToolsFromPublish" AfterTargets="ComputeFilesToPublish">
-        <ItemGroup>
-            <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
-                Condition="'%(Filename)' == 'Microsoft.Dynamics.Nav.CodeAnalysis'
-                       or '%(Filename)' == 'Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces'
-                       or '%(Filename)' == 'Microsoft.Dynamics.Nav.Analyzers.Common'" />
-        </ItemGroup>
-    </Target>
 </Project>
