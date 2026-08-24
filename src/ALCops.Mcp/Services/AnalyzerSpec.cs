@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace ALCops.Mcp.Services;
 
 public enum AnalyzerSpecKind
@@ -44,6 +46,26 @@ public sealed class AnalyzerSpec
         }
 
         return new AnalyzerSpec(AnalyzerSpecKind.DllPath, trimmed);
+    }
+
+    /// <summary>
+    /// Parses the <c>analyzers</c> tool parameter — a JSON array of specs such as
+    /// <c>["${CodeCop}","${UICop}"]</c>. Returns null for null or malformed input, which callers
+    /// treat as "fall back to the project's own configuration".
+    /// </summary>
+    public static IReadOnlyList<string>? ParseJsonArray(string? analyzers)
+    {
+        if (analyzers is null)
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(analyzers);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     public string GetDllFileName() => Kind switch

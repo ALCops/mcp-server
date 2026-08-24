@@ -10,34 +10,41 @@ namespace ALCops.Mcp.Services;
 
 public sealed class AlMcpProxy : IAsyncDisposable
 {
-    private readonly AlMcpLocator _locator;
+    private readonly string _almcpPath;
+    private readonly WorkspaceStartupResolver _workspaceResolver;
     private readonly ILogger<AlMcpProxy> _logger;
     private readonly string[] _passthroughArgs;
 
-    private string? _almcpPath;
     private Process? _childProcess;
     private int _port;
     private IList<McpClientTool>? _cachedTools;
 
-    public bool IsAvailable => _almcpPath is not null;
+    public bool IsAvailable { get; }
     public bool IsStarted => _childProcess is not null && !_childProcess.HasExited;
 
-    public AlMcpProxy(AlMcpLocator locator, ILogger<AlMcpProxy> logger, string[]? passthroughArgs = null)
+    public AlMcpProxy(
+        BcToolsLocator toolsLocator,
+        WorkspaceStartupResolver workspaceResolver,
+        ILogger<AlMcpProxy> logger,
+        string[]? passthroughArgs = null)
     {
-        _locator = locator;
+        _almcpPath = toolsLocator.AlMcpPath;
+        _workspaceResolver = workspaceResolver;
         _logger = logger;
         _passthroughArgs = passthroughArgs ?? [];
 
-        _almcpPath = _locator.GetAlMcpPath();
-        if (_almcpPath is not null)
+        // almcp ships alongside the DevTools DLLs from 17.0 onward; 16.2-and-earlier toolchains
+        // resolve fine but have no almcp, in which case only our native tools are served.
+        IsAvailable = toolsLocator.HasAlMcp;
+        if (IsAvailable)
             _logger.LogInformation("Found almcp at: {Path}", _almcpPath);
         else
-            _logger.LogWarning("almcp not found. MS AL MCP tools will be unavailable. Install the AL Language extension or set ALMCP_PATH.");
+            _logger.LogWarning("almcp not found at {Path}. MS AL MCP tools will be unavailable.", _almcpPath);
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_almcpPath is null)
+        if (!IsAvailable)
             return;
 
         _port = FindFreePort();
@@ -111,9 +118,9 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
     private string[] BuildChildArgs()
     {
-        var args = new List<string> { "--port", _port.ToString() };
-        args.AddRange(_passthroughArgs);
-        return args.ToArray();
+        // The workspace resolver supplies --projects/--codeanalyzers/--rulesetpath from the project's
+        // own config; anything the user passed through on our CLI overrides it.
+        return ["--port", _port.ToString(), .. _workspaceResolver.BuildAlMcpArgs(_passthroughArgs)];
     }
 
     private static int FindFreePort()
@@ -128,7 +135,6 @@ public sealed class AlMcpProxy : IAsyncDisposable
     private async Task WaitForServerReady(CancellationToken cancellationToken)
     {
         using var http = new HttpClient();
-        var endpoint = $"http://localhost:{_port}/mcp/";
         var timeout = TimeSpan.FromSeconds(30);
         var start = Stopwatch.GetTimestamp();
 
@@ -141,13 +147,23 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
             try
             {
-                var response = await http.PostAsync(endpoint, null, cancellationToken);
-                _logger.LogInformation("almcp server ready on port {Port}", _port);
-                return;
+                // A bare POST to the MCP endpoint is rejected (400/406) but proves it is mapped.
+                // A 404 means Kestrel is up but we are asking for the wrong path, which must not
+                // count as ready — otherwise the failure only surfaces later, as a confusing
+                // handshake error.
+                var response = await http.PostAsync(McpEndpoint, null, cancellationToken);
+                if (response.StatusCode != HttpStatusCode.NotFound)
+                {
+                    _logger.LogInformation("almcp server ready on port {Port}", _port);
+                    return;
+                }
+
+                throw new InvalidOperationException(
+                    $"almcp is listening on port {_port} but serves no MCP endpoint at {McpEndpoint}.");
             }
             catch (HttpRequestException)
             {
-                // Not ready yet
+                // Not listening yet
             }
 
             await Task.Delay(200, cancellationToken);
@@ -162,11 +178,17 @@ public sealed class AlMcpProxy : IAsyncDisposable
         return await client.ListToolsAsync(cancellationToken: cancellationToken);
     }
 
+    /// <summary>
+    /// almcp calls <c>MapMcp()</c> with no pattern, so the streamable-HTTP endpoint is the server
+    /// root — not <c>/mcp/</c>, which 404s.
+    /// </summary>
+    private Uri McpEndpoint => new($"http://localhost:{_port}/");
+
     private async Task<McpClient> CreateHttpClient(CancellationToken cancellationToken)
     {
         var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
-            Endpoint = new Uri($"http://localhost:{_port}/mcp/"),
+            Endpoint = McpEndpoint,
             TransportMode = HttpTransportMode.StreamableHttp,
             Name = "almcp-proxy",
         });

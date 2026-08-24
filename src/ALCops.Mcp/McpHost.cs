@@ -10,11 +10,12 @@ namespace ALCops.Mcp.Services;
 
 internal static class McpHost
 {
-    // NoInlining ensures this method is JIT-compiled separately from the caller,
-    // so the assembly resolver registered in BcDevToolsBootstrap is available before
-    // any BC types (referenced by AnalyzerRegistry, ProjectLoader, etc.) are loaded.
+    // NoInlining ensures this method is JIT-compiled separately from the caller, so the assembly
+    // resolver registered by BcToolsLocator.ResolveAndRegister is in place before any BC types
+    // (referenced by ProjectLoader, CodeFixRunner, etc.) are loaded. Still required even though the
+    // resolution chain shrank: the BC DLLs are not in our output directory.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static async Task RunAsync(string[] args, string? bcDevToolsDir, ProxyOptions proxyOptions)
+    public static async Task RunAsync(string[] args, BcToolsLocator toolsLocator, ProxyOptions proxyOptions)
     {
         // MCP servers must use stdio for protocol communication.
         // All diagnostic output goes to stderr so it doesn't interfere with the JSON-RPC channel.
@@ -26,25 +27,29 @@ internal static class McpHost
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
         // Register ALCops services
-        builder.Services.AddSingleton<AlExtensionLocator>();
-        builder.Services.AddSingleton<NuGetDevToolsDownloader>();
-        builder.Services.AddSingleton(new DevToolsLocator(bcDevToolsDir));
-        builder.Services.AddSingleton<AnalyzerRegistry>();
+        builder.Services.AddSingleton(toolsLocator);
         builder.Services.AddSingleton<ProjectLoader>();
         builder.Services.AddSingleton<ProjectSessionManager>();
-        builder.Services.AddSingleton<DiagnosticsRunner>();
         builder.Services.AddSingleton<CodeFixRunner>();
         builder.Services.AddSingleton<ExternalAnalyzerLoader>();
         builder.Services.AddSingleton<RulesetLoader>();
         builder.Services.AddSingleton<ProjectAnalyzerResolver>();
 
+        // Registered even with --no-proxy: list_rules falls back to the discovered project too.
+        builder.Services.AddSingleton(sp =>
+            new WorkspaceStartupResolver(
+                sp.GetRequiredService<ProjectAnalyzerResolver>(),
+                sp.GetRequiredService<ExternalAnalyzerLoader>(),
+                sp.GetRequiredService<ILogger<WorkspaceStartupResolver>>(),
+                proxyOptions.Projects));
+
         // Register almcp proxy (optional — gracefully unavailable if almcp not found)
-        if (!proxyOptions.Disabled)
+        if (!proxyOptions.ProxyDisabled)
         {
-            builder.Services.AddSingleton(new AlMcpLocator(proxyOptions.AlMcpPath));
-            builder.Services.AddSingleton<AlMcpProxy>(sp =>
+            builder.Services.AddSingleton(sp =>
                 new AlMcpProxy(
-                    sp.GetRequiredService<AlMcpLocator>(),
+                    sp.GetRequiredService<BcToolsLocator>(),
+                    sp.GetRequiredService<WorkspaceStartupResolver>(),
                     sp.GetRequiredService<ILogger<AlMcpProxy>>(),
                     proxyOptions.PassthroughArgs));
             builder.Services.AddHostedService<AlMcpProxyStartup>();
@@ -64,7 +69,7 @@ internal static class McpHost
             .WithToolsFromAssembly();
 
         // Dynamic handlers: proxy MS tools alongside our native tools
-        if (!proxyOptions.Disabled)
+        if (!proxyOptions.ProxyDisabled)
         {
             mcpBuilder
                 .WithListToolsHandler(async (request, ct) =>
@@ -92,8 +97,3 @@ internal static class McpHost
         await builder.Build().RunAsync();
     }
 }
-
-internal sealed record ProxyOptions(
-    bool Disabled,
-    string? AlMcpPath,
-    string[]? PassthroughArgs);

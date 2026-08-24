@@ -9,17 +9,10 @@ namespace ALCops.Mcp.Services;
 
 public sealed class ProjectLoader
 {
-    private readonly DevToolsLocator _devToolsLocator;
-
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
-
-    public ProjectLoader(DevToolsLocator devToolsLocator)
-    {
-        _devToolsLocator = devToolsLocator;
-    }
 
     /// <summary>
     /// Loads an AL project from disk into a workspace with full compilation support.
@@ -75,26 +68,6 @@ public sealed class ProjectLoader
         var alPackagesDir = Path.Combine(projectPath, ".alpackages");
         if (Directory.Exists(alPackagesDir))
             packagePaths.Add(alPackagesDir);
-
-        // Add DevTools path for system symbols
-        try
-        {
-            var devToolsPath = _devToolsLocator.GetDevToolsPath();
-            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
-            {
-                var tfmPath = Path.Combine(devToolsPath, tfm);
-                if (Directory.Exists(tfmPath))
-                {
-                    packagePaths.Add(tfmPath);
-                    break;
-                }
-            }
-        }
-        catch
-        {
-            // DevTools not found — compilation will lack system symbols
-            Console.Error.WriteLine("Warning: BC DevTools not found. Compilation will lack system symbols.");
-        }
 
         // 6. Create ProjectInfo with packageCachePaths so the workspace resolves .app dependencies
         var projectInfo = ProjectInfo.Create(
