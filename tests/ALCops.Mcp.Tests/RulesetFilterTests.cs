@@ -6,7 +6,7 @@ namespace ALCops.Mcp.Tests;
 
 /// <summary>
 /// Unit tests for the shared ruleset (RuleAction) suppression/override logic used by
-/// DiagnosticsRunner (`analyze`) and CodeFixRunner (`get_fixes`/`apply_fix`/`apply_fix_all`).
+/// CodeFixRunner (`get_fixes`/`apply_fix`/`apply_fix_all`).
 /// </summary>
 public class RulesetFilterTests
 {

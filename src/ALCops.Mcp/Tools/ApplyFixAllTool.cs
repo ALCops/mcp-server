@@ -54,12 +54,11 @@ public sealed class ApplyFixAllTool
 
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
-            var analyzerSpecs = ParseAnalyzerSpecs(analyzers);
+            var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
             var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
 
             var result = await codeFixRunner.ApplyFixAllAsync(
-                session, diagnosticId, fixAllScope, filePath, equivalenceKey, cancellationToken,
-                analyzerProvider: analyzerSet);
+                session, diagnosticId, fixAllScope, filePath, equivalenceKey, analyzerSet, cancellationToken);
 
             switch (result.Status)
             {
@@ -120,21 +119,6 @@ public sealed class ApplyFixAllTool
         catch (Exception ex)
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
-        }
-    }
-
-    private static IReadOnlyList<string>? ParseAnalyzerSpecs(string? analyzers)
-    {
-        if (analyzers is null)
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(analyzers);
-        }
-        catch
-        {
-            return null;
         }
     }
 }

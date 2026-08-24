@@ -5,7 +5,9 @@
         <LangVersion>Latest</LangVersion>
         <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
-        <BcDevToolsDir Condition="'$(BcDevToolsDir)'==''">../../Microsoft.Dynamics.BusinessCentral.Development.Tools</BcDevToolsDir>
+
+        <BcDevToolsVersion Condition="'$(BcDevToolsVersion)'==''">17.0.34.45391</BcDevToolsVersion>
+        <BcToolsTfm Condition="'$(BcToolsTfm)'==''">net8.0</BcToolsTfm>
     </PropertyGroup>
 
     <ItemGroup>
@@ -15,21 +17,41 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
+
+        <!-- Test-only. The server no longer bundles analyzers (issue #10) — it resolves them from the
+             project's own al.codeAnalyzers config. The fixtures need *some* analyzer with real code
+             fixes to exercise that path, and ALCops' own cops are what the fixtures are written
+             against. IsPackable=false, so nothing here reaches a shipped artifact. -->
+        <PackageReference Include="ALCops.Analyzers" Version="1.0.1" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="../../src/ALCops.Mcp/ALCops.Mcp.csproj" />
     </ItemGroup>
 
-    <!-- BC Dev Tools — needed for integration tests that exercise ProjectLoader -->
+    <ItemGroup>
+        <PackageDownload Include="Microsoft.Dynamics.BusinessCentral.Development.Tools" Version="[$(BcDevToolsVersion)]" />
+    </ItemGroup>
+
+    <PropertyGroup>
+        <BcToolsPath>$(NuGetPackageRoot)microsoft.dynamics.businesscentral.development.tools/$(BcDevToolsVersion)/tools/$(BcToolsTfm)/any/</BcToolsPath>
+    </PropertyGroup>
+
+    <!-- Unlike src, tests need the BC DevTools DLLs *in the output directory*: the CI compatibility
+         matrix hot-swaps these three files in the prebuilt test binary to run the same tests against
+         every supported SDK version. Private=true is what puts them there. -->
     <ItemGroup>
         <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis">
-            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.dll</HintPath>
-            <Private>True</Private>
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.CodeAnalysis.dll</HintPath>
+            <Private>true</Private>
         </Reference>
         <Reference Include="Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces">
-            <HintPath>$(BcDevToolsDir)/net8.0/Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll</HintPath>
-            <Private>True</Private>
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll</HintPath>
+            <Private>true</Private>
+        </Reference>
+        <Reference Include="Microsoft.Dynamics.Nav.Analyzers.Common">
+            <HintPath>$(BcToolsPath)Microsoft.Dynamics.Nav.Analyzers.Common.dll</HintPath>
+            <Private>true</Private>
         </Reference>
     </ItemGroup>
 

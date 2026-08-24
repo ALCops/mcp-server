@@ -11,13 +11,6 @@ namespace ALCops.Mcp.Services;
 
 public sealed class CodeFixRunner
 {
-    private readonly AnalyzerRegistry _registry;
-
-    public CodeFixRunner(AnalyzerRegistry registry)
-    {
-        _registry = registry;
-    }
-
     /// <summary>
     /// Gets available code fixes for a specific diagnostic at a location.
     /// </summary>
@@ -27,11 +20,10 @@ public sealed class CodeFixRunner
         string diagnosticId,
         int line,
         int column,
-        CancellationToken ct = default,
-        IAnalyzerProvider? analyzerProvider = null)
+        IAnalyzerProvider analyzerProvider,
+        CancellationToken ct = default)
     {
-        var provider = analyzerProvider ?? _registry;
-        var providers = provider.GetCodeFixProvidersForDiagnostic(diagnosticId);
+        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
         if (providers.IsEmpty)
             return [];
 
@@ -40,7 +32,7 @@ public sealed class CodeFixRunner
             return [];
 
         // Find the diagnostic at the specified location
-        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, provider);
+        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, analyzerProvider);
         if (diagnostic is null)
             return [];
 
@@ -83,11 +75,10 @@ public sealed class CodeFixRunner
         int line,
         int column,
         string equivalenceKey,
-        CancellationToken ct = default,
-        IAnalyzerProvider? analyzerProvider = null)
+        IAnalyzerProvider analyzerProvider,
+        CancellationToken ct = default)
     {
-        var provider = analyzerProvider ?? _registry;
-        var providers = provider.GetCodeFixProvidersForDiagnostic(diagnosticId);
+        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
         if (providers.IsEmpty)
             return null;
 
@@ -95,12 +86,8 @@ public sealed class CodeFixRunner
         if (document is null)
             return null;
 
-        // Get original source text
-        var originalText = await document.GetTextAsync(ct);
-        var originalContent = originalText?.ToString() ?? "";
-
         // Find the diagnostic
-        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, provider);
+        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, analyzerProvider);
         if (diagnostic is null)
             return null;
 
@@ -141,7 +128,6 @@ public sealed class CodeFixRunner
 
                     return new CodeFixResult(
                         FilePath: filePath,
-                        OriginalContent: originalContent,
                         ModifiedContent: modifiedContent,
                         FixTitle: matchingAction.Title);
                 }
@@ -164,17 +150,16 @@ public sealed class CodeFixRunner
         FixAllScope scope,
         string? filePath,
         string? equivalenceKey,
-        CancellationToken ct = default,
-        IAnalyzerProvider? analyzerProvider = null)
+        IAnalyzerProvider analyzerProvider,
+        CancellationToken ct = default)
     {
-        var provider = analyzerProvider ?? _registry;
-        var providers = provider.GetCodeFixProvidersForDiagnostic(diagnosticId);
+        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
         if (providers.IsEmpty)
             return NoFixAvailable(diagnosticId);
 
         var normalizedFilePath = filePath is null ? null : Path.GetFullPath(filePath);
 
-        var diagnostics = await CollectDiagnosticsForRuleAsync(session, diagnosticId, normalizedFilePath, ct, provider);
+        var diagnostics = await CollectDiagnosticsForRuleAsync(session, diagnosticId, normalizedFilePath, ct, analyzerProvider);
         if (diagnostics.IsEmpty)
             return new FixAllResult(FixAllStatus.NoDiagnosticsFound, diagnosticId, 0, null, null, [], [], []);
 
@@ -301,7 +286,7 @@ public sealed class CodeFixRunner
         // Re-check the changed solution for any remaining occurrences of the rule so
         // callers know exactly what, if anything, the fix-all pass could not resolve.
         var unfixed = await FindRemainingDiagnosticsAsync(
-            changedSolution, project.Id, diagnosticId, normalizedFilePath, ct, provider);
+            changedSolution, project.Id, diagnosticId, normalizedFilePath, ct, analyzerProvider);
 
         return new FixAllResult(
             FixAllStatus.Completed, diagnosticId, diagnostics.Length, fixTitle, chosenKey,
@@ -493,11 +478,11 @@ public sealed class CodeFixRunner
 
         var rawDiagnostics = await compilationWithAnalyzers.GetAnalyzerDiagnosticsAsync();
 
-        // Apply pragma suppression filtering (same as DiagnosticsRunner)
+        // Apply pragma suppression filtering
         var effectiveDiagnostics = CompilationWithAnalyzers
             .GetEffectiveDiagnostics(rawDiagnostics, compilation);
 
-        // Apply ruleset suppression (RuleAction.None), same as DiagnosticsRunner
+        // Apply ruleset suppression (RuleAction.None)
         var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
 
         // Filter to the target file and diagnostic ID
