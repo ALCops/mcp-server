@@ -15,13 +15,7 @@ public class ProjectLoaderTests
         return path;
     }
 
-    private static ProjectLoader CreateLoader()
-    {
-        // In CI, BCDEVELOPMENTTOOLSPATH is set to the downloaded BC DevTools.
-        // Locally, DevToolsLocator resolves via the standard fallback chain.
-        var locator = new DevToolsLocator();
-        return new ProjectLoader(locator);
-    }
+    private static ProjectLoader CreateLoader() => new();
 
     [Fact]
     public async Task LoadProjectAsync_WithValidProject_ReturnsProjectSession()

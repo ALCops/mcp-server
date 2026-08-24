@@ -11,32 +11,6 @@ namespace ALCops.Mcp.Tests;
 /// </summary>
 public class ApplyFixAllToolTests
 {
-    private static string GetFixturePath(string name)
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", name);
-        if (!Directory.Exists(path))
-            throw new DirectoryNotFoundException(
-                $"Test fixture '{name}' not found at {path}. Ensure fixtures are copied to output.");
-        return path;
-    }
-
-    private static ProjectAnalyzerResolver CreateAnalyzerResolver(AnalyzerRegistry registry)
-    {
-        var devToolsLocator = new DevToolsLocator();
-        var alExtensionLocator = new AlExtensionLocator();
-        var nugetDownloader = new NuGetDevToolsDownloader();
-        var externalLoader = new ExternalAnalyzerLoader(alExtensionLocator, nugetDownloader, devToolsLocator);
-        var rulesetLoader = new RulesetLoader();
-        return new ProjectAnalyzerResolver(registry, externalLoader, rulesetLoader);
-    }
-
-    private static void CopyDirectory(string sourceDir, string destDir)
-    {
-        Directory.CreateDirectory(destDir);
-        foreach (var file in Directory.GetFiles(sourceDir))
-            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)));
-    }
-
     private sealed class TestContext : IDisposable
     {
         public string ProjectPath { get; }
@@ -46,14 +20,14 @@ public class ApplyFixAllToolTests
 
         public TestContext(string fixtureName = "FixAllProject")
         {
-            var fixtureSource = GetFixturePath(fixtureName);
-            ProjectPath = Path.Combine(Path.GetTempPath(), $"alcops-fixall-test-{Guid.NewGuid():N}");
-            CopyDirectory(fixtureSource, ProjectPath);
+            // The copy gets an al.codeAnalyzers setting pointing at the cop DLLs beside the test
+            // binary — nothing is bundled any more, so a fixture without it finds zero diagnostics.
+            ProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers(fixtureName, "alcops-fixall-test");
 
-            var registry = new AnalyzerRegistry();
-            SessionManager = new ProjectSessionManager(new ProjectLoader(new DevToolsLocator()));
-            CodeFixRunner = new CodeFixRunner(registry);
-            AnalyzerResolver = CreateAnalyzerResolver(registry);
+            SessionManager = new ProjectSessionManager(new ProjectLoader());
+            CodeFixRunner = new CodeFixRunner();
+            AnalyzerResolver = new ProjectAnalyzerResolver(
+                new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator), new RulesetLoader());
         }
 
         public string ReadFile(string name) => File.ReadAllText(Path.Combine(ProjectPath, name));
