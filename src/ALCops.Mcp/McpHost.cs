@@ -3,6 +3,7 @@ using ALCops.Mcp.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace ALCops.Mcp.Services;
@@ -13,7 +14,7 @@ internal static class McpHost
     // so the assembly resolver registered in BcDevToolsBootstrap is available before
     // any BC types (referenced by AnalyzerRegistry, ProjectLoader, etc.) are loaded.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    public static async Task RunAsync(string[] args, string? bcDevToolsDir)
+    public static async Task RunAsync(string[] args, string? bcDevToolsDir, ProxyOptions proxyOptions)
     {
         // MCP servers must use stdio for protocol communication.
         // All diagnostic output goes to stderr so it doesn't interfere with the JSON-RPC channel.
@@ -37,8 +38,20 @@ internal static class McpHost
         builder.Services.AddSingleton<RulesetLoader>();
         builder.Services.AddSingleton<ProjectAnalyzerResolver>();
 
+        // Register almcp proxy (optional — gracefully unavailable if almcp not found)
+        if (!proxyOptions.Disabled)
+        {
+            builder.Services.AddSingleton(new AlMcpLocator(proxyOptions.AlMcpPath));
+            builder.Services.AddSingleton<AlMcpProxy>(sp =>
+                new AlMcpProxy(
+                    sp.GetRequiredService<AlMcpLocator>(),
+                    sp.GetRequiredService<ILogger<AlMcpProxy>>(),
+                    proxyOptions.PassthroughArgs));
+            builder.Services.AddHostedService<AlMcpProxyStartup>();
+        }
+
         // Register MCP server with stdio transport and auto-discover tools
-        builder.Services
+        var mcpBuilder = builder.Services
             .AddMcpServer(options =>
             {
                 options.ServerInfo = new()
@@ -50,6 +63,37 @@ internal static class McpHost
             .WithStdioServerTransport()
             .WithToolsFromAssembly();
 
+        // Dynamic handlers: proxy MS tools alongside our native tools
+        if (!proxyOptions.Disabled)
+        {
+            mcpBuilder
+                .WithListToolsHandler(async (request, ct) =>
+                {
+                    var proxy = request.Services?.GetService<AlMcpProxy>();
+                    if (proxy is null || !proxy.IsStarted)
+                        return new ListToolsResult();
+
+                    var tools = proxy.GetCachedTools();
+                    return new ListToolsResult
+                    {
+                        Tools = tools.Select(t => t.ProtocolTool).ToList()
+                    };
+                })
+                .WithCallToolHandler(async (request, ct) =>
+                {
+                    var proxy = request.Services!.GetRequiredService<AlMcpProxy>();
+                    return await proxy.ForwardAsync(
+                        request.Params!.Name,
+                        request.Params.Arguments,
+                        ct);
+                });
+        }
+
         await builder.Build().RunAsync();
     }
 }
+
+internal sealed record ProxyOptions(
+    bool Disabled,
+    string? AlMcpPath,
+    string[]? PassthroughArgs);
