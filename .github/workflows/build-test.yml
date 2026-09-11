@@ -36,8 +36,8 @@ jobs:
           data = json.load(sys.stdin)
           all_versions = data['versions']
 
-          # Minimum supported major version (v16 and below are not supported)
-          MIN_MAJOR = 17
+          # Minimum supported major version (v17 and below are not supported)
+          MIN_MAJOR = 18
 
           def parse_base(v):
               return tuple(int(p) for p in v.split('-')[0].split('.'))

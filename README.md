@@ -33,7 +33,7 @@ If you already have the [AL Language](https://marketplace.visualstudio.com/items
 ## Requirements
 
 - [.NET 10.0](https://dotnet.microsoft.com/download/dotnet/10.0) SDK or Runtime
-- BC Development Tools **v17.0 or higher**, from either the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool or the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension
+- BC Development Tools **v18.0 or higher**, from either the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool or the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension
 
 > **Note:** v16 and earlier are not supported — the BC Development Tools DLLs introduced breaking API changes in v17. `almcp` also first shipped in v17, so on an older toolchain only the native tools below are available.
 

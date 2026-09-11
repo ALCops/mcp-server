@@ -9,8 +9,14 @@
         <!-- BC DevTools compile floor. Deliberately the lowest supported stable release: the server
              is compiled against the oldest SDK it must support and runs against whatever newer SDK
              the user has installed. CI overrides these to run its version matrix. -->
-        <BcDevToolsVersion Condition="'$(BcDevToolsVersion)'==''">17.0.34.45391</BcDevToolsVersion>
-        <BcToolsTfm Condition="'$(BcToolsTfm)'==''">net8.0</BcToolsTfm>
+        <BcDevToolsVersion Condition="'$(BcDevToolsVersion)'==''">18.0.41.39415</BcDevToolsVersion>
+        <BcToolsTfm Condition="'$(BcToolsTfm)'==''">net10.0</BcToolsTfm>
+
+        <!-- 18.x ships its own ModelContextProtocol.Core (1.0.0) next to the DLLs we reference, so
+             MSBuild's dependency walk reports a conflict with our 0.9.0-preview.2. It is noise: we
+             never reference Microsoft.Dynamics.Nav.Deployment (the only consumer), and at runtime
+             BcToolsLocator's resolver is a *fallback* hook, so our own copy always resolves first. -->
+        <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
 
         <!-- Dotnet tool packaging -->
         <PackAsTool>true</PackAsTool>

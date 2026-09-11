@@ -22,7 +22,7 @@ The project compiles against proprietary Microsoft BC Development Tools DLLs (`M
 A plain `PackageReference` is impossible: as of 17.0 the `Microsoft.Dynamics.BusinessCentral.Development.Tools` package is `DotnetTool` + `Template` only, with all payload under `tools/<tfm>/any/`, and NuGet rejects referencing a `DotnetTool` package. Instead both csproj files declare a `<PackageDownload>` on a pinned version — which restores the nupkg into the global packages folder without referencing it — and point three `<Reference>` items at `$(NuGetPackageRoot)…/tools/$(BcToolsTfm)/any/`.
 
 - `$(BcDevToolsVersion)` — the compile floor, deliberately the *lowest* supported stable release. Compiling against the oldest SDK and running against newer ones is what makes forward compatibility hold; CI overrides this property to run its version matrix.
-- `$(BcToolsTfm)` — `net8.0` by default (the 17.x line ships net8.0 only; 18.x ships both).
+- `$(BcToolsTfm)` — `net10.0` by default, matching our own TFM (18.x ships both `net8.0` and `net10.0` payloads; the 17.x line shipped net8.0 only).
 - `src` sets `<Private>false</Private>`, so the proprietary DLLs never enter the build output and therefore never enter the published package. This is the redistribution guard.
 - `tests` sets `<Private>true</Private>` on purpose: the CI compatibility matrix hot-swaps those three DLLs in the prebuilt test binary to run the same tests against every supported SDK version.
 
