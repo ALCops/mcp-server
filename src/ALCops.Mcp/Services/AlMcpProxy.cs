@@ -94,10 +94,15 @@ public sealed class AlMcpProxy : IAsyncDisposable
         var args = BuildChildArgs();
         _logger.LogInformation("Starting almcp on port {Port}: {Path} {Args}", _port, _almcpPath, string.Join(' ', args));
 
+        // Both streams must be captured. In HTTP mode almcp writes its banner, "Port: N" and the
+        // project-load progress to *stdout* (Program.cs passes Console.WriteLine as the output
+        // sink); left uncaptured, the child inherits our stdout and that text lands in the middle
+        // of the MCP JSON-RPC stream.
         var psi = new ProcessStartInfo
         {
             FileName = _almcpPath,
             UseShellExecute = false,
+            RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
@@ -107,11 +112,9 @@ public sealed class AlMcpProxy : IAsyncDisposable
         _childProcess = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start almcp process.");
 
-        _childProcess.ErrorDataReceived += (_, e) =>
-        {
-            if (e.Data is not null)
-                _logger.LogDebug("[almcp] {Line}", e.Data);
-        };
+        _childProcess.OutputDataReceived += (_, e) => LogChildLine(e.Data);
+        _childProcess.ErrorDataReceived += (_, e) => LogChildLine(e.Data);
+        _childProcess.BeginOutputReadLine();
         _childProcess.BeginErrorReadLine();
 
         await WaitForServerReady(cancellationToken);
@@ -121,6 +124,12 @@ public sealed class AlMcpProxy : IAsyncDisposable
         var client = await GetOrCreateClientAsync(cancellationToken);
         _cachedTools = await client.ListToolsAsync(cancellationToken: cancellationToken);
         _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
+    }
+
+    private void LogChildLine(string? line)
+    {
+        if (!string.IsNullOrWhiteSpace(line))
+            _logger.LogDebug("[almcp] {Line}", line);
     }
 
     public IList<McpClientTool> GetCachedTools() => _cachedTools ?? [];
