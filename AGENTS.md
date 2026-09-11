@@ -1,4 +1,4 @@
-# Copilot Instructions
+# ALCops MCP Server — Agent Instructions
 
 ## Build
 

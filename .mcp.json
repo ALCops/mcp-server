@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "alcops": {
+      "command": "alcops-mcp"
+    }
+  }
+}
