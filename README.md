@@ -52,6 +52,8 @@ If you already have the [AL Language](https://marketplace.visualstudio.com/items
 
 `al_compile`, `al_build`, `al_getdiagnostics`, `al_addproject`, `al_downloadsymbols`, `al_symbolsearch`, `al_symbolrelations`, `al_getpackagedependencies`, `al_inspectpage`, `al_publish`, `al_run_tests`, `al_searchtranslations`, `al_writetranslation`, `al_auth_login`, `al_auth_logout` — the exact set depends on your installed version.
 
+`almcp` is started in the background, so the native tools are available the moment the server comes up; the `al_*` tools appear once it has loaded your project (the server sends `tools/list_changed`, and hosts that don't support it see them on their next tool listing).
+
 Pass `--no-proxy` to serve only the native tools. Use it when your agent already registers Microsoft's `almcp` itself, so the `al_*` tools don't show up twice.
 
 > **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all.

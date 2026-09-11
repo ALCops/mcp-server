@@ -38,7 +38,7 @@ It is deliberately **thin**: Microsoft's `almcp` already compiles, runs diagnost
 
 1. `Program.cs` calls `BcToolsLocator.ResolveAndRegister()` to find the tools directory and register an `AssemblyLoadContext` resolver. This **must** happen before any BC types are JIT-compiled — the DLLs are not in the output directory, so nothing can resolve them before this runs.
 2. `McpHost.RunAsync()` is marked `[NoInlining]` to enforce that ordering, then builds the host, registers DI services, and starts the MCP stdio transport.
-3. `AlMcpProxyStartup` (an `IHostedService`) launches `almcp` as a child process on a free localhost port and caches its tool list.
+3. `AlMcpProxyStartup` (an `IHostedService`) launches `almcp` as a child process on a free localhost port and caches its tool list — **on a background task**, so the stdio server and the four native tools are up immediately no matter how long the child takes. `AlMcpProxy.Ready` is the signal everything else waits on: `tools/list` gives it 10s and otherwise answers with the native tools plus a one-shot `notifications/tools/list_changed`; an `al_*` call that arrives early parks on `Ready` instead of failing.
 
 ### Key layers
 

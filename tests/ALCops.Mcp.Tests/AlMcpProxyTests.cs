@@ -152,21 +152,31 @@ public sealed class AlMcpFixture : IAsyncLifetime
     public CapturingLogger Logger { get; } = new();
     public string ProjectDir { get; private set; } = string.Empty;
 
-    public async Task InitializeAsync()
+    /// <summary>
+    /// A proxy over a fresh copy of the MinimalProject fixture, not yet started. The lifecycle tests
+    /// drive start/stop themselves, so they cannot share this fixture's already-running child.
+    /// </summary>
+    public static AlMcpProxy CreateProxy(CapturingLogger logger, out string projectDir)
     {
-        if (!IsAvailable)
-            return;
-
-        ProjectDir = TestAnalyzers.CopyFixtureWithAnalyzers("MinimalProject", "alcops-proxy-test");
+        projectDir = TestAnalyzers.CopyFixtureWithAnalyzers("MinimalProject", "alcops-proxy-test");
 
         var loader = new ExternalAnalyzerLoader(Locator!);
         var resolver = new WorkspaceStartupResolver(
             new ProjectAnalyzerResolver(loader, new RulesetLoader()),
             loader,
             NullLogger<WorkspaceStartupResolver>.Instance,
-            [ProjectDir]);
+            [projectDir]);
 
-        Proxy = new AlMcpProxy(Locator!, resolver, Logger);
+        return new AlMcpProxy(Locator!, resolver, logger);
+    }
+
+    public async Task InitializeAsync()
+    {
+        if (!IsAvailable)
+            return;
+
+        Proxy = CreateProxy(Logger, out var projectDir);
+        ProjectDir = projectDir;
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         await Proxy.StartAsync(cts.Token);

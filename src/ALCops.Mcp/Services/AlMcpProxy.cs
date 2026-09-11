@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 
 namespace ALCops.Mcp.Services;
 
@@ -25,8 +26,18 @@ public sealed class AlMcpProxy : IAsyncDisposable
     private McpClient? _client;
     private readonly SemaphoreSlim _clientGate = new(1, 1);
 
+    // Startup runs on a background task (see AlMcpProxyStartup), so every consumer needs a way to
+    // find out whether almcp will ever be usable without blocking the MCP server's own startup.
+    private readonly TaskCompletionSource<bool> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _toolListChangedArmed;
+
     public bool IsAvailable { get; }
     public bool IsStarted => _childProcess is not null && !_childProcess.HasExited;
+
+    /// <summary>Completes true once almcp is up and its tools are cached; false if it never will be.</summary>
+    public Task<bool> Ready => _ready.Task;
+
+    public bool IsReady => Ready is { IsCompletedSuccessfully: true, Result: true };
 
     /// <summary>The current almcp session id, for tests that need to end the session out of band.</summary>
     internal string? CurrentSessionId => _client?.SessionId;
@@ -48,9 +59,15 @@ public sealed class AlMcpProxy : IAsyncDisposable
         // resolve fine but have no almcp, in which case only our native tools are served.
         IsAvailable = toolsLocator.HasAlMcp;
         if (IsAvailable)
+        {
             _logger.LogInformation("Found almcp at: {Path}", _almcpPath);
+        }
         else
+        {
+            // Nothing will ever start it, so settle Ready now rather than leave waiters parked.
+            _ready.TrySetResult(false);
             _logger.LogWarning("almcp not found at {Path}. MS AL MCP tools will be unavailable.", _almcpPath);
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -58,6 +75,20 @@ public sealed class AlMcpProxy : IAsyncDisposable
         if (!IsAvailable)
             return;
 
+        try
+        {
+            await StartCoreAsync(cancellationToken);
+            _ready.TrySetResult(true);
+        }
+        catch
+        {
+            _ready.TrySetResult(false);
+            throw;
+        }
+    }
+
+    private async Task StartCoreAsync(CancellationToken cancellationToken)
+    {
         _port = FindFreePort();
 
         var args = BuildChildArgs();
@@ -85,8 +116,10 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
         await WaitForServerReady(cancellationToken);
 
-        _client = await CreateHttpClient(cancellationToken);
-        _cachedTools = await _client.ListToolsAsync(cancellationToken: cancellationToken);
+        // Through the gate, not by assignment: startup now runs concurrently with requests, and an
+        // early ForwardAsync would otherwise create a second client for the same child.
+        var client = await GetOrCreateClientAsync(cancellationToken);
+        _cachedTools = await client.ListToolsAsync(cancellationToken: cancellationToken);
         _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
     }
 
@@ -97,6 +130,11 @@ public sealed class AlMcpProxy : IAsyncDisposable
         IDictionary<string, JsonElement>? arguments,
         CancellationToken cancellationToken)
     {
+        // Calls that arrive while almcp is still booting simply wait for it; the caller's token and
+        // almcp's own readiness timeout bound the wait.
+        if (!await Ready.WaitAsync(cancellationToken))
+            return ErrorResult("MS AL MCP Server is not available (almcp did not start).");
+
         if (!IsStarted)
             return ErrorResult("MS AL MCP Server is not running.");
 
@@ -151,6 +189,34 @@ public sealed class AlMcpProxy : IAsyncDisposable
             // Could have reached the server — never retry. Drop the client so the next call reconnects.
             await InvalidateClientAsync(client);
             return LogAndError(toolName, ex);
+        }
+    }
+
+    /// <summary>
+    /// Called by the tools/list handler when it had to answer before almcp was ready: tells that
+    /// session to re-list once we are. One shot — a second stale list must not queue a second ping.
+    /// </summary>
+    public void NotifyToolListChangedWhenReady(McpServer server)
+    {
+        if (Interlocked.Exchange(ref _toolListChangedArmed, 1) == 1)
+            return;
+
+        _ = SendToolListChangedWhenReadyAsync(server);
+    }
+
+    private async Task SendToolListChangedWhenReadyAsync(McpServer server)
+    {
+        if (!await Ready)
+            return;
+
+        try
+        {
+            await server.SendNotificationAsync(NotificationMethods.ToolListChangedNotification);
+        }
+        catch (Exception ex)
+        {
+            // The session may be gone by the time almcp comes up; nothing to recover.
+            _logger.LogDebug(ex, "Could not send tools/list_changed");
         }
     }
 
@@ -328,6 +394,9 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Releases anything still parked in ForwardAsync waiting for a child that is going away.
+        _ready.TrySetResult(false);
+
         // Before the child is killed, so the session ends with a DELETE rather than by process death.
         if (_client is not null)
         {

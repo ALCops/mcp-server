@@ -10,6 +10,10 @@ namespace ALCops.Mcp.Services;
 
 internal static class McpHost
 {
+    // Long enough for a normal project load, so hosts that list tools only once still get the al_*
+    // tools; short enough that a broken almcp never makes the server look hung.
+    private static readonly TimeSpan ListToolsReadyBudget = TimeSpan.FromSeconds(10);
+
     // NoInlining ensures this method is JIT-compiled separately from the caller, so the assembly
     // resolver registered by BcToolsLocator.ResolveAndRegister is in place before any BC types
     // (referenced by ProjectLoader, CodeFixRunner, etc.) are loaded. Still required even though the
@@ -75,7 +79,22 @@ internal static class McpHost
                 .WithListToolsHandler(async (request, ct) =>
                 {
                     var proxy = request.Services?.GetService<AlMcpProxy>();
-                    if (proxy is null || !proxy.IsStarted)
+                    if (proxy is null || !proxy.IsAvailable)
+                        return new ListToolsResult();
+
+                    bool ready;
+                    try
+                    {
+                        ready = await proxy.Ready.WaitAsync(ListToolsReadyBudget, ct);
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Answer with what we have and tell this session to ask again once almcp is up.
+                        proxy.NotifyToolListChangedWhenReady(request.Server);
+                        return new ListToolsResult();
+                    }
+
+                    if (!ready)
                         return new ListToolsResult();
 
                     var tools = proxy.GetCachedTools();
