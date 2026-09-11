@@ -59,6 +59,13 @@
         </Reference>
     </ItemGroup>
 
+    <!-- The BC DevTools folder holds almcp itself, which the test output folder does not (only the
+         three Private=true DLLs land there). AlMcpProxyTests needs the real almcp, so surface the
+         restore path to run time. -->
+    <ItemGroup>
+        <AssemblyMetadata Include="BcToolsPath" Value="$(BcToolsPath)" />
+    </ItemGroup>
+
     <!-- Copy test fixture files to output -->
     <ItemGroup>
         <None Include="Fixtures/**/*" CopyToOutputDirectory="PreserveNewest" LinkBase="Fixtures" />
