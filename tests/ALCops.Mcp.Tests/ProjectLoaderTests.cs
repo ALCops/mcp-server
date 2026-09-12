@@ -15,13 +15,7 @@ public class ProjectLoaderTests
         return path;
     }
 
-    private static ProjectLoader CreateLoader()
-    {
-        // In CI, BCDEVELOPMENTTOOLSPATH is set to the downloaded BC DevTools.
-        // Locally, DevToolsLocator resolves via the standard fallback chain.
-        var locator = new DevToolsLocator();
-        return new ProjectLoader(locator);
-    }
+    private static ProjectLoader CreateLoader() => new();
 
     [Fact]
     public async Task LoadProjectAsync_WithValidProject_ReturnsProjectSession()
@@ -36,6 +30,57 @@ public class ProjectLoaderTests
         Assert.NotNull(session);
         Assert.NotNull(session.ProjectPath);
         Assert.NotEqual(default, session.ProjectId);
+    }
+
+    [Fact]
+    public async Task LoadProjectAsync_HonoursPackageCachePathSetting()
+    {
+        // Multi-app repos routinely share one symbol cache via al.packageCachePath. The AL extension
+        // resolves relative entries against the project folder; so must we, or get_fixes compiles
+        // without symbols while the developer's editor is perfectly happy.
+        var root = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}");
+        try
+        {
+            var project = Path.Combine(root, "App");
+            var shared = Path.Combine(root, "shared-packages");
+            TestAnalyzers.CopyDirectory(GetFixturePath("MinimalProject"), project);
+            Directory.CreateDirectory(shared);
+            Directory.CreateDirectory(Path.Combine(project, ".vscode"));
+            await File.WriteAllTextAsync(
+                Path.Combine(project, ".vscode", "settings.json"),
+                """{ "al.packageCachePath": ["../shared-packages", "does-not-exist"] }""");
+
+            var session = await CreateLoader().LoadProjectAsync(project);
+
+            // Only directories that exist are handed to the workspace; the missing one is dropped.
+            Assert.Equal([shared], session.GetProject().PackageCachePaths);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LoadProjectAsync_WithoutSetting_UsesAlPackages()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}");
+        try
+        {
+            TestAnalyzers.CopyDirectory(GetFixturePath("MinimalProject"), root);
+            var alPackages = Path.Combine(root, ".alpackages");
+            Directory.CreateDirectory(alPackages);
+
+            var session = await CreateLoader().LoadProjectAsync(root);
+
+            Assert.Equal([alPackages], session.GetProject().PackageCachePaths);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

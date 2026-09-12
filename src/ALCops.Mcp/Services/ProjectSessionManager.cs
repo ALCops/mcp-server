@@ -40,16 +40,6 @@ public sealed class ProjectSessionManager : IDisposable
         return await GetOrLoadProjectAsync(normalizedPath, ct);
     }
 
-    /// <summary>
-    /// Removes a cached project session.
-    /// </summary>
-    public void UnloadProject(string projectPath)
-    {
-        var normalizedPath = Path.GetFullPath(projectPath);
-        if (_sessions.TryRemove(normalizedPath, out var session))
-            session.Dispose();
-    }
-
     public void Dispose()
     {
         foreach (var session in _sessions.Values)

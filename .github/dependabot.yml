@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: nuget
-    directory: /src/ALCops.Mcp
+    directory: /tests/ALCops.Mcp.Tests
     schedule:
       interval: weekly
     allow:

@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Reflection;
-using System.Runtime.Loader;
 using Microsoft.Dynamics.Nav.CodeAnalysis.CodeFixes;
 using Microsoft.Dynamics.Nav.CodeAnalysis.Diagnostics;
 
@@ -9,24 +8,13 @@ namespace ALCops.Mcp.Services;
 
 public sealed class ExternalAnalyzerLoader
 {
-    private readonly AlExtensionLocator _alExtensionLocator;
-    private readonly NuGetDevToolsDownloader _nugetDownloader;
-    private readonly DevToolsLocator _devToolsLocator;
+    private readonly BcToolsLocator _toolsLocator;
     private readonly ConcurrentDictionary<string, LoadedAnalyzerAssembly> _cache = new(StringComparer.OrdinalIgnoreCase);
     private int _assemblyResolveRegistered;
 
-    // Lazily resolved fallback path for BC cop DLLs (NuGet download)
-    private string? _nugetToolsPath;
-    private bool _nugetToolsResolved;
-
-    public ExternalAnalyzerLoader(
-        AlExtensionLocator alExtensionLocator,
-        NuGetDevToolsDownloader nugetDownloader,
-        DevToolsLocator devToolsLocator)
+    public ExternalAnalyzerLoader(BcToolsLocator toolsLocator)
     {
-        _alExtensionLocator = alExtensionLocator;
-        _nugetDownloader = nugetDownloader;
-        _devToolsLocator = devToolsLocator;
+        _toolsLocator = toolsLocator;
     }
 
     public LoadedAnalyzerAssembly? ResolveAndLoad(AnalyzerSpec spec, string projectPath)
@@ -43,67 +31,23 @@ public sealed class ExternalAnalyzerLoader
     }
 
     /// <summary>
-    /// Async variant that allows NuGet download fallback.
+    /// Resolves an analyzer spec to a DLL path without loading it. Used at startup to compose the
+    /// child <c>almcp</c>'s <c>--codeanalyzers</c> list.
     /// </summary>
-    public async Task<LoadedAnalyzerAssembly?> ResolveAndLoadAsync(AnalyzerSpec spec, string projectPath, CancellationToken ct = default)
-    {
-        var dllPath = ResolveDllPath(spec, projectPath);
-
-        // If sync resolution failed for BC cops, try NuGet download
-        if ((dllPath is null || !File.Exists(dllPath))
-            && (spec.Kind == AnalyzerSpecKind.WellKnownBcCop || spec.Kind == AnalyzerSpecKind.AnalyzerFolderRelative))
-        {
-            await EnsureNuGetToolsResolvedAsync(ct);
-            if (_nugetToolsPath is not null)
-            {
-                var candidate = Path.Combine(_nugetToolsPath, spec.GetDllFileName());
-                if (File.Exists(candidate))
-                    dllPath = candidate;
-            }
-        }
-
-        if (dllPath is null || !File.Exists(dllPath))
-        {
-            Console.Error.WriteLine($"Warning: Analyzer DLL not found: {spec.RawValue} (resolved to: {dllPath ?? "null"})");
-            return null;
-        }
-
-        var fullPath = Path.GetFullPath(dllPath);
-        return _cache.GetOrAdd(fullPath, path => LoadAssembly(path, spec));
-    }
-
-    private string? ResolveDllPath(AnalyzerSpec spec, string projectPath)
+    public string? ResolveDllPath(AnalyzerSpec spec, string projectPath)
     {
         switch (spec.Kind)
         {
             case AnalyzerSpecKind.WellKnownBcCop:
-                return ResolveBcCopPath(spec.GetDllFileName());
-
             case AnalyzerSpecKind.AnalyzerFolderRelative:
             {
-                // ${analyzerFolder} → AL extension's Analyzers directory
-                var extensionPath = _alExtensionLocator.GetAnalyzersPath();
-                if (extensionPath is not null)
-                {
-                    var candidate = Path.Combine(extensionPath, spec.GetDllFileName());
-                    if (File.Exists(candidate))
-                        return candidate;
-                }
+                var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, spec.GetDllFileName());
+                if (File.Exists(candidate))
+                    return candidate;
 
                 // Fallback: project-local .vscode/analyzers/
                 var localPath = Path.Combine(projectPath, ".vscode", "analyzers", spec.GetDllFileName());
-                if (File.Exists(localPath))
-                    return localPath;
-
-                // Try NuGet cache (if already resolved)
-                if (_nugetToolsPath is not null)
-                {
-                    var nugetCandidate = Path.Combine(_nugetToolsPath, spec.GetDllFileName());
-                    if (File.Exists(nugetCandidate))
-                        return nugetCandidate;
-                }
-
-                return null;
+                return File.Exists(localPath) ? localPath : null;
             }
 
             case AnalyzerSpecKind.DllPath:
@@ -114,50 +58,6 @@ public sealed class ExternalAnalyzerLoader
             default:
                 return null;
         }
-    }
-
-    private string? ResolveBcCopPath(string dllFileName)
-    {
-        // 1. AL VS Code extension (matches user's dev environment)
-        var extensionPath = _alExtensionLocator.GetAnalyzersPath();
-        if (extensionPath is not null)
-        {
-            var candidate = Path.Combine(extensionPath, dllFileName);
-            if (File.Exists(candidate))
-                return candidate;
-        }
-
-        // 2. NuGet cache (if already resolved synchronously)
-        if (_nugetToolsPath is not null)
-        {
-            var candidate = Path.Combine(_nugetToolsPath, dllFileName);
-            if (File.Exists(candidate))
-                return candidate;
-        }
-
-        // 3. DevTools directory (CI/build environments)
-        try
-        {
-            var devToolsBase = _devToolsLocator.GetDevToolsPath();
-            foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
-            {
-                var devToolsPath = Path.Combine(devToolsBase, tfm, dllFileName);
-                if (File.Exists(devToolsPath))
-                    return devToolsPath;
-            }
-        }
-        catch { /* DevTools not available */ }
-
-        return null;
-    }
-
-    private async Task EnsureNuGetToolsResolvedAsync(CancellationToken ct)
-    {
-        if (_nugetToolsResolved)
-            return;
-
-        _nugetToolsResolved = true;
-        _nugetToolsPath = await _nugetDownloader.GetToolsPathAsync(ct);
     }
 
     private LoadedAnalyzerAssembly LoadAssembly(string fullPath, AnalyzerSpec spec)
@@ -248,53 +148,23 @@ public sealed class ExternalAnalyzerLoader
 
     private void EnsureAssemblyResolveRegistered()
     {
-        if (Interlocked.CompareExchange(ref _assemblyResolveRegistered, 1, 0) == 0)
+        if (Interlocked.CompareExchange(ref _assemblyResolveRegistered, 1, 0) != 0)
+            return;
+
+        string[] searchPaths = [_toolsLocator.AnalyzerFolder, _toolsLocator.ToolsDirectory, AppContext.BaseDirectory];
+
+        AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
         {
-            // Build search paths: AL extension → NuGet cache → DevTools → exe dir
-            var searchPaths = new List<string>();
+            var dllName = new AssemblyName(args.Name).Name + ".dll";
 
-            var extensionPath = _alExtensionLocator.GetAnalyzersPath();
-            if (extensionPath is not null)
-                searchPaths.Add(extensionPath);
-
-            if (_nugetToolsPath is not null)
-                searchPaths.Add(_nugetToolsPath);
-
-            try {
-                var devToolsBase = _devToolsLocator.GetDevToolsPath();
-                foreach (var tfm in BcDevToolsBootstrap.TfmSubfolders)
-                {
-                    var tfmPath = Path.Combine(devToolsBase, tfm);
-                    if (Directory.Exists(tfmPath))
-                    {
-                        searchPaths.Add(tfmPath);
-                        break;
-                    }
-                }
-            }
-            catch { /* DevTools not available */ }
-
-            searchPaths.Add(AppContext.BaseDirectory);
-
-            AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+            foreach (var dir in searchPaths)
             {
-                var assemblyName = new AssemblyName(args.Name);
-                var dllName = assemblyName.Name + ".dll";
+                var candidate = Path.Combine(dir, dllName);
+                if (File.Exists(candidate))
+                    return Assembly.LoadFrom(candidate);
+            }
 
-                // Also check NuGet path if it was resolved after registration
-                var paths = _nugetToolsPath is not null && !searchPaths.Contains(_nugetToolsPath)
-                    ? searchPaths.Append(_nugetToolsPath)
-                    : searchPaths;
-
-                foreach (var dir in paths)
-                {
-                    var candidate = Path.Combine(dir, dllName);
-                    if (File.Exists(candidate))
-                        return Assembly.LoadFrom(candidate);
-                }
-
-                return null;
-            };
-        }
+            return null;
+        };
     }
 }

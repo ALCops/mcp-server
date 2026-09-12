@@ -11,23 +11,10 @@ namespace ALCops.Mcp.Tests;
 /// </summary>
 public class ApplyFixToolTests
 {
-    private static string GetFixturePath(string name)
+    private static (ProjectAnalyzerResolver Resolver, ExternalAnalyzerLoader Loader) CreateAnalyzerResolver()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", name);
-        if (!Directory.Exists(path))
-            throw new DirectoryNotFoundException(
-                $"Test fixture '{name}' not found at {path}. Ensure fixtures are copied to output.");
-        return path;
-    }
-
-    private static ProjectAnalyzerResolver CreateAnalyzerResolver(AnalyzerRegistry registry)
-    {
-        var devToolsLocator = new DevToolsLocator();
-        var alExtensionLocator = new AlExtensionLocator();
-        var nugetDownloader = new NuGetDevToolsDownloader();
-        var externalLoader = new ExternalAnalyzerLoader(alExtensionLocator, nugetDownloader, devToolsLocator);
-        var rulesetLoader = new RulesetLoader();
-        return new ProjectAnalyzerResolver(registry, externalLoader, rulesetLoader);
+        var loader = new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator);
+        return (new ProjectAnalyzerResolver(loader, new RulesetLoader()), loader);
     }
 
     [Fact]
@@ -35,38 +22,34 @@ public class ApplyFixToolTests
     {
         // Copy the fixture to a temp directory so this test can safely mutate the file
         // without affecting the checked-in fixture used by other tests/runs.
-        var fixtureSource = GetFixturePath("ApplyFixProject");
-        var tempProjectPath = Path.Combine(Path.GetTempPath(), $"alcops-applyfix-test-{Guid.NewGuid():N}");
-        CopyDirectory(fixtureSource, tempProjectPath);
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-test");
 
         try
         {
             var filePath = Path.Combine(tempProjectPath, "MyPage.al");
             var originalContent = await File.ReadAllTextAsync(filePath);
 
-            var sessionManager = new ProjectSessionManager(new ProjectLoader(new DevToolsLocator()));
-            var registry = new AnalyzerRegistry();
-            var codeFixRunner = new CodeFixRunner(registry);
-            var analyzerResolver = CreateAnalyzerResolver(registry);
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var codeFixRunner = new CodeFixRunner();
+            var (analyzerResolver, _) = CreateAnalyzerResolver();
 
-            var diagnosticsRunner = new DiagnosticsRunner(registry);
             var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
-            var diagnostics = await diagnosticsRunner.RunAsync(session, filePath: filePath, analyzerProvider: analyzerSet);
 
-            var target = diagnostics.FirstOrDefault(d => d.Id == "LC0020");
-            Assert.True(target is not null,
-                $"Expected fixture to produce an LC0020 (ApplicationAreaRedundancy) diagnostic — got: " +
-                $"{string.Join(", ", diagnostics.Select(d => d.Id))}. Built-in analyzers may not be loaded in this environment.");
-
+            // LC0020 (ApplicationAreaRedundancy) on the field-level ApplicationArea in MyPage.al.
+            // Hardcoded rather than discovered, matching GetFixes_RulesetSuppressesRule_ReturnsNoFixes.
+            const int line = 11, column = 17;
             var fixes = await codeFixRunner.GetFixesAsync(
-                session, filePath, target!.Id, target.StartLine, target.StartColumn,
-                analyzerProvider: analyzerSet);
-            Assert.True(fixes.Count > 0, "Expected at least one available code fix for LC0020.");
+                session, filePath, "LC0020", line, column, analyzerSet);
+
+            Assert.True(fixes.Count > 0,
+                $"Expected a fixable LC0020 at line {line}, column {column}. Loaded {analyzerSet.GetAllAnalyzers().Length} " +
+                $"analyzer(s); warnings: {string.Join("; ", analyzerSet.Warnings)}. " +
+                "The fixture, the location, or the analyzer configuration may have changed.");
 
             var result = await ApplyFixTool.ApplyFix(
                 sessionManager, codeFixRunner, analyzerResolver,
-                tempProjectPath, filePath, target.Id, target.StartLine, target.StartColumn,
+                tempProjectPath, filePath, "LC0020", line, column,
                 fixes[0].EquivalenceKey);
 
             Assert.Contains("\"applied\":true", result);
@@ -82,40 +65,31 @@ public class ApplyFixToolTests
         }
     }
 
-    private static void CopyDirectory(string sourceDir, string destDir)
-    {
-        Directory.CreateDirectory(destDir);
-        foreach (var file in Directory.GetFiles(sourceDir))
-            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)));
-    }
-
     [Fact]
     public async Task GetFixes_RulesetSuppressesRule_ReturnsNoFixes()
     {
         // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None". Even though
         // PageA.al still has a redundant ApplicationArea, get_fixes must not offer a fix for it
-        // (CodeFixRunner.FindDiagnosticAsync must honor ruleset suppression, same as DiagnosticsRunner).
-        var fixtureSource = GetFixturePath("FixAllRulesetProject");
-        var tempProjectPath = Path.Combine(Path.GetTempPath(), $"alcops-ruleset-getfixes-test-{Guid.NewGuid():N}");
-        CopyDirectory(fixtureSource, tempProjectPath);
+        // (CodeFixRunner.FindDiagnosticAsync must honor ruleset suppression).
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("FixAllRulesetProject", "alcops-ruleset-getfixes-test");
 
         try
         {
             var filePath = Path.Combine(tempProjectPath, "PageA.al");
 
-            var sessionManager = new ProjectSessionManager(new ProjectLoader(new DevToolsLocator()));
-            var registry = new AnalyzerRegistry();
-            var codeFixRunner = new CodeFixRunner(registry);
-            var analyzerResolver = CreateAnalyzerResolver(registry);
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var codeFixRunner = new CodeFixRunner();
+            var (analyzerResolver, loader) = CreateAnalyzerResolver();
 
             var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
 
-            // Control: with the bare registry (no ruleset applied), the same location must
-            // resolve to a real fixable diagnostic — proving the location itself is correct and
-            // that the ruleset (not a location mismatch) is what suppresses the result below.
+            // Control: with the same analyzers but no ruleset applied, the location must resolve to a
+            // real fixable diagnostic — proving the location itself is correct and that the ruleset
+            // (not a location mismatch) is what suppresses the result below.
             const int line = 11, column = 17;
+            var withoutRuleset = TestAnalyzers.LoadAnalyzersWithoutRuleset(loader, tempProjectPath);
             var controlFixes = await codeFixRunner.GetFixesAsync(
-                session, filePath, "LC0020", line, column, analyzerProvider: registry);
+                session, filePath, "LC0020", line, column, withoutRuleset);
             Assert.True(controlFixes.Count > 0,
                 "Expected a fixable LC0020 at line 11, column 17 with no ruleset applied — fixture or location may have changed.");
 
@@ -123,7 +97,7 @@ public class ApplyFixToolTests
             // which sets LC0020 to "None"), the same location must yield no fixes.
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
             var fixes = await codeFixRunner.GetFixesAsync(
-                session, filePath, "LC0020", line, column, analyzerProvider: analyzerSet);
+                session, filePath, "LC0020", line, column, analyzerSet);
 
             Assert.Empty(fixes);
         }

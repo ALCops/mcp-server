@@ -4,24 +4,11 @@ namespace ALCops.Mcp.Services;
 
 public sealed class ProjectAnalyzerResolver
 {
-    private readonly AnalyzerRegistry _builtInRegistry;
     private readonly ExternalAnalyzerLoader _loader;
     private readonly RulesetLoader _rulesetLoader;
 
-    private static readonly HashSet<string> AlCopsAssemblyNames = new(StringComparer.OrdinalIgnoreCase)
+    public ProjectAnalyzerResolver(ExternalAnalyzerLoader loader, RulesetLoader rulesetLoader)
     {
-        "ALCops.ApplicationCop",
-        "ALCops.DocumentationCop",
-        "ALCops.FormattingCop",
-        "ALCops.LinterCop",
-        "ALCops.PlatformCop",
-        "ALCops.TestAutomationCop",
-        "ALCops.Analyzers"
-    };
-
-    public ProjectAnalyzerResolver(AnalyzerRegistry builtInRegistry, ExternalAnalyzerLoader loader, RulesetLoader rulesetLoader)
-    {
-        _builtInRegistry = builtInRegistry;
         _loader = loader;
         _rulesetLoader = rulesetLoader;
     }
@@ -43,15 +30,9 @@ public sealed class ProjectAnalyzerResolver
                 if (string.IsNullOrWhiteSpace(rawSpec))
                     continue;
 
-                var spec = AnalyzerSpec.Parse(rawSpec);
-
-                // Skip ALCops' own DLLs — they're already built-in
-                if (IsAlCopsDll(spec))
-                    continue;
-
                 try
                 {
-                    var assembly = await _loader.ResolveAndLoadAsync(spec, projectPath, ct);
+                    var assembly = _loader.ResolveAndLoad(AnalyzerSpec.Parse(rawSpec), projectPath);
                     if (assembly is not null)
                         loaded.Add(assembly);
                     else
@@ -67,10 +48,84 @@ public sealed class ProjectAnalyzerResolver
         // Load ruleset
         var ruleActions = await LoadRulesetAsync(projectPath);
 
-        return new AnalyzerSet(_builtInRegistry, loaded, warnings, ruleActions);
+        return new AnalyzerSet(loaded, warnings, ruleActions);
+    }
+
+    /// <summary>
+    /// The analyzer specs the project declares, without loading anything.
+    /// </summary>
+    public IReadOnlyList<string>? GetConfiguredAnalyzerSpecs(string projectPath)
+        => ReadAnalyzerSpecsFromSettings(projectPath);
+
+    /// <summary>
+    /// The ruleset file the project declares, without loading it. Same discovery order as
+    /// <see cref="ResolveAsync"/>: <c>al.ruleSetPath</c>, then AL-Go's <c>rulesetFile</c>, then the
+    /// conventional file names at project and repo root.
+    /// </summary>
+    public string? GetConfiguredRulesetPath(string projectPath)
+        => FindRulesetPath(projectPath);
+
+    /// <summary>
+    /// The project's <c>al.packageCachePath</c> entries exactly as written (string or array, the
+    /// two shapes the AL extension accepts), or <c>null</c> when the project configures none.
+    /// Relative entries are left relative: the AL extension resolves them against the project
+    /// folder, and so does <c>almcp</c> — per project — which is why callers must not absolutise
+    /// them against a single project before handing them on.
+    /// </summary>
+    public static IReadOnlyList<string>? GetConfiguredPackageCachePaths(string projectPath)
+    {
+        var settingsPath = Path.Combine(projectPath, ".vscode", "settings.json");
+        if (!File.Exists(settingsPath))
+            return null;
+
+        try
+        {
+            var json = File.ReadAllText(settingsPath);
+            using var doc = JsonDocument.Parse(json, JsonDocOptions);
+            if (!doc.RootElement.TryGetProperty("al.packageCachePath", out var element))
+                return null;
+
+            var paths = element.ValueKind switch
+            {
+                JsonValueKind.String => [element.GetString()!],
+                JsonValueKind.Array => element.EnumerateArray()
+                    .Where(e => e.ValueKind == JsonValueKind.String)
+                    .Select(e => e.GetString()!)
+                    .ToList(),
+                _ => new List<string>(),
+            };
+
+            paths.RemoveAll(string.IsNullOrWhiteSpace);
+            return paths.Count > 0 ? paths : null;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Failed to read al.packageCachePath from {settingsPath}: {ex.Message}");
+            return null;
+        }
     }
 
     private async Task<Dictionary<string, RuleAction>?> LoadRulesetAsync(string projectPath)
+    {
+        var rulesetPath = FindRulesetPath(projectPath);
+        if (rulesetPath is null)
+            return null;
+
+        // Determine if external rulesets are enabled
+        var enableExternal = ReadEnableExternalRulesets(projectPath);
+
+        try
+        {
+            return await _rulesetLoader.LoadAsync(rulesetPath, enableExternal);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Failed to load ruleset {rulesetPath}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string? FindRulesetPath(string projectPath)
     {
         // 1. Check al.ruleSetPath in .vscode/settings.json
         var rulesetPath = ReadRulesetPathFromSettings(projectPath);
@@ -99,21 +154,7 @@ public sealed class ProjectAnalyzerResolver
             }
         }
 
-        if (rulesetPath is null)
-            return null;
-
-        // Determine if external rulesets are enabled
-        var enableExternal = ReadEnableExternalRulesets(projectPath);
-
-        try
-        {
-            return await _rulesetLoader.LoadAsync(rulesetPath, enableExternal);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Warning: Failed to load ruleset {rulesetPath}: {ex.Message}");
-            return null;
-        }
+        return rulesetPath;
     }
 
     private static string? ReadRulesetPathFromSettings(string projectPath)
@@ -241,15 +282,6 @@ public sealed class ProjectAnalyzerResolver
             dir = Path.GetDirectoryName(dir);
         }
         return null;
-    }
-
-    private static bool IsAlCopsDll(AnalyzerSpec spec)
-    {
-        if (spec.Kind != AnalyzerSpecKind.DllPath && spec.Kind != AnalyzerSpecKind.AnalyzerFolderRelative)
-            return false;
-
-        var fileName = Path.GetFileNameWithoutExtension(spec.GetDllFileName());
-        return AlCopsAssemblyNames.Contains(fileName);
     }
 
     private static readonly JsonDocumentOptions JsonDocOptions = new()

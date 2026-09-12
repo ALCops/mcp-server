@@ -20,19 +20,18 @@ public sealed class ApplyFixTool
         [Description("Line number of the diagnostic (1-based).")] int line,
         [Description("Column number of the diagnostic (1-based).")] int column,
         [Description("Equivalence key of the fix to apply (from get_fixes results).")] string equivalenceKey,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
-            var analyzerSpecs = ParseAnalyzerSpecs(analyzers);
+            var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
             var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
 
             var result = await codeFixRunner.ApplyFixAsync(
-                session, filePath, diagnosticId, line, column, equivalenceKey, cancellationToken,
-                analyzerProvider: analyzerSet);
+                session, filePath, diagnosticId, line, column, equivalenceKey, analyzerSet, cancellationToken);
 
             if (result is null)
                 return JsonSerializer.Serialize(
@@ -56,21 +55,6 @@ public sealed class ApplyFixTool
         catch (Exception ex)
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
-        }
-    }
-
-    private static IReadOnlyList<string>? ParseAnalyzerSpecs(string? analyzers)
-    {
-        if (analyzers is null)
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(analyzers);
-        }
-        catch
-        {
-            return null;
         }
     }
 }

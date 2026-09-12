@@ -24,7 +24,7 @@ public sealed class ApplyFixAllTool
             "There is no separate 'workspace' scope — each loaded AL project is already the whole workspace.")] string scope = "project",
         [Description("Absolute path to a single .al file. Required when scope='document'; ignored (with a warning) when scope='project'.")] string? filePath = null,
         [Description("Equivalence key of the fix to apply (from get_fixes results). Required only if the rule offers more than one distinct fix; omit otherwise.")] string? equivalenceKey = null,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         [Description("If true, computes and reports the changes without writing to disk.")] bool dryRun = false,
         CancellationToken cancellationToken = default)
     {
@@ -54,12 +54,11 @@ public sealed class ApplyFixAllTool
 
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
-            var analyzerSpecs = ParseAnalyzerSpecs(analyzers);
+            var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
             var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
 
             var result = await codeFixRunner.ApplyFixAllAsync(
-                session, diagnosticId, fixAllScope, filePath, equivalenceKey, cancellationToken,
-                analyzerProvider: analyzerSet);
+                session, diagnosticId, fixAllScope, filePath, equivalenceKey, analyzerSet, cancellationToken);
 
             switch (result.Status)
             {
@@ -120,21 +119,6 @@ public sealed class ApplyFixAllTool
         catch (Exception ex)
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
-        }
-    }
-
-    private static IReadOnlyList<string>? ParseAnalyzerSpecs(string? analyzers)
-    {
-        if (analyzers is null)
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(analyzers);
-        }
-        catch
-        {
-            return null;
         }
     }
 }

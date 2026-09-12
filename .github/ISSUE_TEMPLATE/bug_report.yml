@@ -87,7 +87,7 @@ body:
     attributes:
       label: AL Language extension version
       description: The server picks up the BC Development Tools from the AL Language VS Code extension, if installed.
-      placeholder: e.g., 17.0.1856043
+      placeholder: e.g., 18.0.41.39415
     validations:
       required: false
 

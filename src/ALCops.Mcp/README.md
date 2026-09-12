@@ -1,12 +1,15 @@
 # ALCops MCP Server
 
-An [MCP](https://modelcontextprotocol.io/) server that brings [ALCops](https://alcops.dev) AL code analysis to AI assistants. Lets Claude, Cursor, and other MCP clients analyze Business Central AL projects, browse rules, and apply code fixes — all without leaving the conversation.
+An [MCP](https://modelcontextprotocol.io/) server that brings AL **code fixes** to AI assistants, and re-exposes Microsoft's own AL MCP tools alongside them. Lets Claude, Cursor, and other MCP clients compile Business Central AL projects, browse rules, and apply fixes — all without leaving the conversation.
 
 ## Install
 
 ```sh
+dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools
 dotnet tool install -g ALCops.Mcp
 ```
+
+The first install is optional if you already have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension — the server finds the BC Development Tools there instead. Nothing is downloaded at runtime; if neither is present the server exits with the install command.
 
 ## Configure
 
@@ -22,25 +25,19 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 }
 ```
 
-If you have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension installed, the server picks up BC Development Tools automatically. Otherwise set `BCDEVELOPMENTTOOLSPATH` or let the server auto-download them from NuGet on first run.
-
 ## Tools
 
-5 tools, ~1,020 tokens of schema overhead.
+**Native:** `list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all` — code fixes and rule discovery, which Microsoft's `almcp` does not provide.
 
-| Tool | Description |
-|------|-------------|
-| `analyze` | Run analyzers on an AL project or file. Returns diagnostics with severity, location, and code fix availability. |
-| `list_rules` | List all available analyzer rules with metadata (ID, title, severity, category, cop). |
-| `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
-| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk. |
-| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. |
+**Proxied from `almcp`:** `al_compile`, `al_build`, `al_getdiagnostics`, `al_downloadsymbols`, `al_symbolsearch`, `al_publish`, `al_run_tests` and the rest of the `al_*` set. Pass `--no-proxy` to suppress these when your agent already registers `almcp` itself.
+
+> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all.
 
 ## Analyzers
 
-Includes ALCops' 6 built-in cops (ApplicationCop, DocumentationCop, FormattingCop, LinterCop, PlatformCop, TestCop) plus optional BC standard analyzers (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`) and third-party analyzers — auto-discovered from `al.codeAnalyzers` in `.vscode/settings.json`.
+Analyzers are **not bundled**. The server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json` — ALCops' cops, BC's standard cops (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`), or any third-party analyzer. AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too, and the same configuration is handed to the child `almcp` so `al_compile` and `get_fixes` agree about which rules run and which are suppressed.
 
-Browse the complete rules reference at [alcops.dev/docs/analyzers](https://alcops.dev/docs/analyzers/).
+Browse the ALCops rules reference at [alcops.dev/docs/analyzers](https://alcops.dev/docs/analyzers/).
 
 ## Links
 

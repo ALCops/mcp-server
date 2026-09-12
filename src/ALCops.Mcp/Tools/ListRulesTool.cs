@@ -10,30 +10,31 @@ namespace ALCops.Mcp.Tools;
 public sealed class ListRulesTool
 {
     [McpServerTool(Name = "list_rules", ReadOnly = true),
-     Description("List available analyzer rules. By default returns a compact list (ID, title, cop name). Use verbose=true for full metadata including description, severity, category, help URI, and code fix availability.")]
+     Description("List available analyzer rules. Rules come from the analyzers the project configures via al.codeAnalyzers — nothing is bundled. By default returns a compact list (ID, title, cop name). Use verbose=true for full metadata including description, severity, category, help URI, and code fix availability.")]
     public static async Task<string> ListRules(
-        AnalyzerRegistry registry,
         ProjectAnalyzerResolver analyzerResolver,
-        [Description("Optional: absolute path to the AL project folder. When provided, includes rules from external analyzers (CodeCop, UICop, etc.) configured in .vscode/settings.json.")] string? projectPath = null,
+        WorkspaceStartupResolver workspaceResolver,
+        [Description("Optional: absolute path to the AL project folder. Defaults to the project discovered at startup.")] string? projectPath = null,
         [Description("Filter rules by cop name (e.g., 'LinterCop', 'ApplicationCop', 'CodeCop'). Leave empty for all cops.")] string? copFilter = null,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted and projectPath is set, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         [Description("Return full rule metadata (description, severity, category, helpUri, hasCodeFix). Default: false.")] bool verbose = false,
         CancellationToken cancellationToken = default)
     {
-        IAnalyzerProvider provider;
-        IReadOnlyList<string>? warnings = null;
+        // No projectPath: fall back to the project discovered at startup, the same one the proxied
+        // MS tools operate on. There is no project-independent rule list any more — analyzers are
+        // whatever the project configures.
+        projectPath ??= workspaceResolver.Config.PrimaryProject;
+        if (projectPath is null)
+            return JsonSerializer.Serialize(new
+            {
+                error = "NoProject",
+                message = "No AL project available. Pass projectPath, or start the server from a folder " +
+                    "containing app.json (or use --projects)."
+            }, JsonDefaults.Options);
 
-        if (projectPath is not null)
-        {
-            var analyzerSpecs = ParseAnalyzerSpecs(analyzers);
-            var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
-            provider = analyzerSet;
-            warnings = analyzerSet.Warnings.Count > 0 ? analyzerSet.Warnings : null;
-        }
-        else
-        {
-            provider = registry;
-        }
+        var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
+        var provider = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
+        var warnings = provider.Warnings.Count > 0 ? provider.Warnings : null;
 
         var descriptors = provider.GetAllDescriptors();
 
@@ -64,21 +65,6 @@ public sealed class ListRulesTool
                 cop = r.CopName
             }).ToList();
             return JsonSerializer.Serialize(new { rules, warnings }, JsonDefaults.Options);
-        }
-    }
-
-    private static IReadOnlyList<string>? ParseAnalyzerSpecs(string? analyzers)
-    {
-        if (analyzers is null)
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(analyzers);
-        }
-        catch
-        {
-            return null;
         }
     }
 }

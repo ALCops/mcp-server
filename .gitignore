@@ -489,3 +489,4 @@ Microsoft.Dynamics.BusinessCentral.Development.Tools/
 # Pack output
 artifacts/
 .serena/
+.claude/settings.local.json

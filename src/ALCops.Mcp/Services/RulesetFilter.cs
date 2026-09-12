@@ -3,9 +3,10 @@ using Microsoft.Dynamics.Nav.CodeAnalysis.Diagnostics;
 namespace ALCops.Mcp.Services;
 
 /// <summary>
-/// Shared ruleset (RuleAction) suppression/override logic, used by both DiagnosticsRunner
-/// (the `analyze` tool) and CodeFixRunner (`get_fixes`/`apply_fix`/`apply_fix_all`), so a
-/// diagnostic suppressed via ruleset is treated consistently everywhere.
+/// Shared ruleset (RuleAction) suppression/override logic, used by CodeFixRunner across
+/// `get_fixes`/`apply_fix`/`apply_fix_all`. The child almcp applies the same ruleset to
+/// `al_compile` via the `--rulesetpath` the startup bridge hands it, so a rule suppressed by a
+/// ruleset is suppressed on both sides.
 /// </summary>
 public static class RulesetFilter
 {

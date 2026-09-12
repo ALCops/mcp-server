@@ -15,48 +15,37 @@ public sealed class AnalyzerSet : IAnalyzerProvider
     public IReadOnlyList<string> Warnings { get; }
     public Dictionary<string, RuleAction>? RuleActions { get; }
 
-    public AnalyzerSet(AnalyzerRegistry builtIn, IReadOnlyList<LoadedAnalyzerAssembly> externalAssemblies, IReadOnlyList<string>? warnings = null, Dictionary<string, RuleAction>? ruleActions = null)
+    public AnalyzerSet(IReadOnlyList<LoadedAnalyzerAssembly> assemblies, IReadOnlyList<string>? warnings = null, Dictionary<string, RuleAction>? ruleActions = null)
     {
         Warnings = warnings ?? [];
         RuleActions = ruleActions;
 
-        // Merge analyzers: built-in first, then external
-        var analyzers = builtIn.GetAllAnalyzers().ToBuilder();
-        foreach (var ext in externalAssemblies)
-            analyzers.AddRange(ext.Analyzers);
-        _analyzers = analyzers.ToImmutable();
-
-        // Merge code fix providers
-        var fixProviders = builtIn.GetAllCodeFixProviders().ToBuilder();
-        foreach (var ext in externalAssemblies)
-            fixProviders.AddRange(ext.CodeFixProviders);
-        _codeFixProviders = fixProviders.ToImmutable();
-
-        // Merge descriptors: built-in takes precedence
-        var descriptors = new Dictionary<string, DiagnosticDescriptor>(builtIn.GetAllDescriptors());
-        foreach (var ext in externalAssemblies)
-        {
-            foreach (var (id, descriptor) in ext.Descriptors)
-                descriptors.TryAdd(id, descriptor);
-        }
-        _descriptors = descriptors.ToImmutableDictionary();
-
-        // Merge cop names: built-in takes precedence
+        var analyzers = ImmutableArray.CreateBuilder<DiagnosticAnalyzer>();
+        var fixProviders = ImmutableArray.CreateBuilder<CodeFixProvider>();
+        var descriptors = new Dictionary<string, DiagnosticDescriptor>();
         var copNames = new Dictionary<string, string>();
-        foreach (var (id, _) in builtIn.GetAllDescriptors())
-            copNames[id] = builtIn.GetCopName(id);
-        foreach (var ext in externalAssemblies)
-        {
-            foreach (var (id, _) in ext.Descriptors)
-                copNames.TryAdd(id, ext.CopName);
-        }
-        _diagnosticToCopName = copNames.ToImmutableDictionary();
-
-        // Merge fix provider lookup: aggregate all providers per diagnostic
         var diagnosticToFix = new Dictionary<string, List<CodeFixProvider>>();
-        AddFixProviders(diagnosticToFix, builtIn.GetAllCodeFixProviders());
-        foreach (var ext in externalAssemblies)
-            AddFixProviders(diagnosticToFix, ext.CodeFixProviders);
+
+        // First assembly to claim a diagnostic ID wins, so the configured order in
+        // al.codeAnalyzers decides which cop owns an ID when two of them declare the same one.
+        foreach (var assembly in assemblies)
+        {
+            analyzers.AddRange(assembly.Analyzers);
+            fixProviders.AddRange(assembly.CodeFixProviders);
+
+            foreach (var (id, descriptor) in assembly.Descriptors)
+            {
+                descriptors.TryAdd(id, descriptor);
+                copNames.TryAdd(id, assembly.CopName);
+            }
+
+            AddFixProviders(diagnosticToFix, assembly.CodeFixProviders);
+        }
+
+        _analyzers = analyzers.ToImmutable();
+        _codeFixProviders = fixProviders.ToImmutable();
+        _descriptors = descriptors.ToImmutableDictionary();
+        _diagnosticToCopName = copNames.ToImmutableDictionary();
         _diagnosticToFixProviders = diagnosticToFix.ToImmutableDictionary(
             kv => kv.Key, kv => kv.Value.ToImmutableArray());
     }

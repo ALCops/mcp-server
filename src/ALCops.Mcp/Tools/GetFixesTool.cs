@@ -19,40 +19,24 @@ public sealed class GetFixesTool
         [Description("The diagnostic rule ID (e.g., 'AC0018', 'LC0001').")] string diagnosticId,
         [Description("Line number of the diagnostic (1-based).")] int line,
         [Description("Column number of the diagnostic (1-based).")] int column,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
-            var analyzerSpecs = ParseAnalyzerSpecs(analyzers);
+            var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
             var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
 
             var fixes = await codeFixRunner.GetFixesAsync(
-                session, filePath, diagnosticId, line, column, cancellationToken,
-                analyzerProvider: analyzerSet);
+                session, filePath, diagnosticId, line, column, analyzerSet, cancellationToken);
 
             return JsonSerializer.Serialize(fixes, JsonDefaults.Options);
         }
         catch (Exception ex)
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
-        }
-    }
-
-    private static IReadOnlyList<string>? ParseAnalyzerSpecs(string? analyzers)
-    {
-        if (analyzers is null)
-            return null;
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<string>>(analyzers);
-        }
-        catch
-        {
-            return null;
         }
     }
 }
