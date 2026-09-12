@@ -20,7 +20,7 @@ public sealed class ApplyFixTool
         [Description("Line number of the diagnostic (1-based).")] int line,
         [Description("Column number of the diagnostic (1-based).")] int column,
         [Description("Equivalence key of the fix to apply (from get_fixes results).")] string equivalenceKey,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         CancellationToken cancellationToken = default)
     {
         try

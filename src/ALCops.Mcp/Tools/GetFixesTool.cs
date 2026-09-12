@@ -19,7 +19,7 @@ public sealed class GetFixesTool
         [Description("The diagnostic rule ID (e.g., 'AC0018', 'LC0001').")] string diagnosticId,
         [Description("Line number of the diagnostic (1-based).")] int line,
         [Description("Column number of the diagnostic (1-based).")] int column,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         CancellationToken cancellationToken = default)
     {
         try

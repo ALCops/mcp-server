@@ -105,7 +105,7 @@ public sealed class WorkspaceStartupResolver
     private WorkspaceStartupConfig Resolve()
     {
         var projects = _explicitProjects is { Length: > 0 }
-            ? [.. _explicitProjects.Select(Path.GetFullPath)]
+            ? ResolveExplicitProjects(_explicitProjects)
             : DiscoverProjects(Directory.GetCurrentDirectory());
 
         if (projects.Count == 0)
@@ -174,6 +174,40 @@ public sealed class WorkspaceStartupResolver
             packageCachePaths is null ? ".alpackages (default)" : string.Join("; ", packageCachePaths));
 
         return new WorkspaceStartupConfig(projects, analyzerPaths, rulesetPath, packageCachePaths);
+    }
+
+    /// <summary>
+    /// <c>--projects</c> entries get the same treatment as the working directory: a folder that is
+    /// itself a project is used as-is, anything else is scanned for projects beneath it. Passing them
+    /// through unchecked meant a workspace root or a typo reached almcp verbatim, which then failed
+    /// with a generic load error and left the analyzer/ruleset resolution silently pointed at a
+    /// folder with no <c>.vscode/settings.json</c>.
+    /// </summary>
+    private List<string> ResolveExplicitProjects(IEnumerable<string> explicitProjects)
+    {
+        var projects = new List<string>();
+        foreach (var raw in explicitProjects)
+        {
+            var path = Path.GetFullPath(raw);
+            var found = DiscoverProjects(path);
+
+            if (found.Count == 0)
+            {
+                if (Directory.Exists(path))
+                    _logger.LogWarning("--projects entry {Path} has no app.json, and none was found up to {Depth} levels below it; ignored.", path, MaxScanDepth);
+                else
+                    _logger.LogWarning("--projects entry {Path} does not exist; ignored.", path);
+                continue;
+            }
+
+            if (found.Count > 1 || found[0] != path)
+                _logger.LogInformation("--projects entry {Path} expanded to {Count} project(s).", path, found.Count);
+
+            foreach (var project in found)
+                AddDistinct(projects, project);
+        }
+
+        return projects;
     }
 
     private static void AddDistinct(List<string> paths, string path)

@@ -73,6 +73,40 @@ public class WorkspaceStartupResolverTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitProjects_ThatAreProjects_AreUsedAsIs()
+    {
+        var a = CreateProject("A");
+        var b = CreateProject("B");
+
+        Assert.Equal([a, b], CreateResolver(a, b).Config.ProjectDirectories);
+    }
+
+    [Fact]
+    public void ExplicitProjects_WorkspaceRoot_ExpandsToProjectsBeneathIt()
+    {
+        // A user pointing --projects at the repo root instead of an app folder gets the same
+        // downward scan the working directory gets, rather than a verbatim path almcp cannot load.
+        var app1 = CreateProject("src", "App1");
+        var app2 = CreateProject("src", "App2");
+
+        Assert.Equal([app1, app2], CreateResolver(_root).Config.ProjectDirectories.Order());
+    }
+
+    [Fact]
+    public void ExplicitProjects_MissingOrEmptyEntries_AreDroppedNotForwarded()
+    {
+        var real = CreateProject("Real");
+        var empty = Path.Combine(_root, "Empty");
+        Directory.CreateDirectory(empty);
+        var missing = Path.Combine(_root, "Missing");
+
+        var config = CreateResolver(missing, empty, real).Config;
+
+        Assert.Equal([real], config.ProjectDirectories);
+        Assert.Equal(real, config.PrimaryProject);
+    }
+
+    [Fact]
     public void BuildAlMcpArgs_PassesAnalyzersAndRulesetFromProjectConfig()
     {
         var project = TestAnalyzers.CopyFixtureWithAnalyzers("FixAllRulesetProject", "alcops-startup-fixture");

@@ -24,7 +24,7 @@ public sealed class ApplyFixAllTool
             "There is no separate 'workspace' scope — each loaded AL project is already the whole workspace.")] string scope = "project",
         [Description("Absolute path to a single .al file. Required when scope='document'; ignored (with a warning) when scope='project'.")] string? filePath = null,
         [Description("Equivalence key of the fix to apply (from get_fixes results). Required only if the rule offers more than one distinct fix; omit otherwise.")] string? equivalenceKey = null,
-        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json. ALCops analyzers are always included.")] string? analyzers = null,
+        [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         [Description("If true, computes and reports the changes without writing to disk.")] bool dryRun = false,
         CancellationToken cancellationToken = default)
     {

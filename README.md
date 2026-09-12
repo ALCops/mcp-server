@@ -93,7 +93,7 @@ If none match, the server exits with the install command rather than starting up
 | Option | Description |
 |--------|-------------|
 | `--devtools-path <dir>` | Use this BC DevTools directory instead of probing. |
-| `--projects <dir>[;<dir>]` | Work on these projects instead of scanning down from the working directory for `app.json`. |
+| `--projects <dir>[;<dir>]` | Work on these projects instead of scanning down from the working directory for `app.json`. A directory that is not itself a project is scanned for projects beneath it; entries with none are ignored with a warning. |
 | `--no-proxy` | Serve only the native tools; do not start `almcp`. |
 
 Arguments `almcp` understands — `--codeanalyzers`, `--rulesetpath`, `--settingspath`, `--enablecodeanalysis`, `--enableexternalrulesets`, `--locale`, `--noauth`, `--nolog` and friends — are forwarded to the child process and override anything discovered from your project.
