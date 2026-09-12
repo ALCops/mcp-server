@@ -26,7 +26,7 @@
              project's own al.codeAnalyzers config. The fixtures need *some* analyzer with real code
              fixes to exercise that path, and ALCops' own cops are what the fixtures are written
              against. IsPackable=false, so nothing here reaches a shipped artifact. -->
-        <PackageReference Include="ALCops.Analyzers" Version="1.0.1" />
+        <PackageReference Include="ALCops.Analyzers" Version="1.2.0" />
     </ItemGroup>
 
     <ItemGroup>
