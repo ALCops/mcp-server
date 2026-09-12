@@ -127,6 +127,51 @@ public class WorkspaceStartupResolverTests : IDisposable
     }
 
     [Fact]
+    public void BuildAlMcpArgs_PassesPackageCachePathAsWritten()
+    {
+        // almcp resolves relative --packagecachepath entries against each project, as the AL
+        // extension does — so the values must go through untouched, not absolutised against the
+        // primary project, or a shared "../.alpackages" would be wrong for every other project.
+        var project = CreateProject("App");
+        Directory.CreateDirectory(Path.Combine(project, ".vscode"));
+        File.WriteAllText(
+            Path.Combine(project, ".vscode", "settings.json"),
+            """{ "al.packageCachePath": ["../.alpackages", ".alpackages"] }""");
+
+        var args = CreateResolver(project).BuildAlMcpArgs([]);
+
+        Assert.Equal("../.alpackages;.alpackages", ValueOf(args, "--packagecachepath"));
+    }
+
+    [Fact]
+    public void BuildAlMcpArgs_PackageCachePathAsString_IsAccepted()
+    {
+        // The AL extension accepts a bare string as well as an array.
+        var project = CreateProject("App");
+        Directory.CreateDirectory(Path.Combine(project, ".vscode"));
+        File.WriteAllText(
+            Path.Combine(project, ".vscode", "settings.json"),
+            """{ "al.packageCachePath": "../symbols" }""");
+
+        Assert.Equal("../symbols", ValueOf(CreateResolver(project).BuildAlMcpArgs([]), "--packagecachepath"));
+    }
+
+    [Fact]
+    public void BuildAlMcpArgs_UserPackageCachePathWins()
+    {
+        var project = CreateProject("App");
+        Directory.CreateDirectory(Path.Combine(project, ".vscode"));
+        File.WriteAllText(
+            Path.Combine(project, ".vscode", "settings.json"),
+            """{ "al.packageCachePath": "../symbols" }""");
+
+        var args = CreateResolver(project).BuildAlMcpArgs(["--packagecachepath", @"C:\cache"]);
+
+        Assert.Equal(@"C:\cache", ValueOf(args, "--packagecachepath"));
+        Assert.Single(args, a => a == "--packagecachepath");
+    }
+
+    [Fact]
     public void BuildAlMcpArgs_ProjectWithoutAnalyzerConfig_OmitsCodeAnalysisFlags()
     {
         // A project that configures nothing must not get a bogus empty --codeanalyzers: almcp would
@@ -138,6 +183,8 @@ public class WorkspaceStartupResolverTests : IDisposable
         Assert.DoesNotContain("--codeanalyzers", args);
         Assert.DoesNotContain("--enablecodeanalysis", args);
         Assert.DoesNotContain("--rulesetpath", args);
+        // almcp's own default is .alpackages; restating it would only hide a user override elsewhere.
+        Assert.DoesNotContain("--packagecachepath", args);
     }
 
     private static string? ValueOf(string[] args, string flag)

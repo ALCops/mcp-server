@@ -73,7 +73,7 @@ This is deliberate: bundling pinned cop DLLs beside whatever `Nav.CodeAnalysis` 
 }
 ```
 
-The same analyzer and ruleset configuration is passed to the child `almcp` at startup, so `al_compile` and `get_fixes` always agree about which rules run and which are suppressed.
+The same analyzer, ruleset and `al.packageCachePath` configuration is passed to the child `almcp` at startup, so `al_compile` and `get_fixes` always agree about which rules run, which are suppressed, and where symbols come from.
 
 Browse the ALCops rules reference at [alcops.dev/docs/analyzers](https://alcops.dev/docs/analyzers/).
 

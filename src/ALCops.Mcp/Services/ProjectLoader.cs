@@ -63,11 +63,24 @@ public sealed class ProjectLoader
             filePathToDocId[normalizedPath] = docId;
         }
 
-        // 5. Resolve package cache paths (.alpackages directory)
-        var packagePaths = new List<string>();
-        var alPackagesDir = Path.Combine(projectPath, ".alpackages");
-        if (Directory.Exists(alPackagesDir))
-            packagePaths.Add(alPackagesDir);
+        // 5. Resolve package cache paths. Honour al.packageCachePath like the AL extension does —
+        // multi-app repos routinely point every project at one shared cache — falling back to the
+        // conventional .alpackages. Relative entries are relative to the project folder.
+        var configured = ProjectAnalyzerResolver.GetConfiguredPackageCachePaths(projectPath) ?? [".alpackages"];
+        var candidates = configured
+            .Select(p => Path.IsPathRooted(p) ? Path.GetFullPath(p) : Path.GetFullPath(Path.Combine(projectPath, p)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var packagePaths = candidates.Where(Directory.Exists).ToList();
+
+        if (packagePaths.Count == 0)
+        {
+            // Not fatal — syntax-level cops still run — but symbol-dependent diagnostics will be
+            // missing and this is the first place to look when get_fixes finds nothing.
+            Console.Error.WriteLine(
+                $"Warning: No package cache found for {projectPath} (looked in: {string.Join("; ", candidates)}). " +
+                "Compilation will lack symbols; run al_downloadsymbols or check al.packageCachePath.");
+        }
 
         // 6. Create ProjectInfo with packageCachePaths so the workspace resolves .app dependencies
         var projectInfo = ProjectInfo.Create(

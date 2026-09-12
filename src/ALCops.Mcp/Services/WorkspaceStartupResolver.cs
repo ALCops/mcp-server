@@ -11,7 +11,8 @@ namespace ALCops.Mcp.Services;
 public sealed record WorkspaceStartupConfig(
     IReadOnlyList<string> ProjectDirectories,
     IReadOnlyList<string> AnalyzerDllPaths,
-    string? RulesetPath)
+    string? RulesetPath,
+    IReadOnlyList<string>? PackageCachePaths = null)
 {
     public string? PrimaryProject => ProjectDirectories.Count > 0 ? ProjectDirectories[0] : null;
 }
@@ -92,6 +93,11 @@ public sealed class WorkspaceStartupResolver
         if (config.RulesetPath is not null)
             AddIfUnset("--rulesetpath", config.RulesetPath);
 
+        // Passed as written: almcp resolves relative entries against each project, exactly as the
+        // AL extension does, so a shared "../.alpackages" stays correct for every project.
+        if (config.PackageCachePaths is { Count: > 0 })
+            AddIfUnset("--packagecachepath", string.Join(';', config.PackageCachePaths));
+
         args.AddRange(userArgs);
         return [.. args];
     }
@@ -161,7 +167,13 @@ public sealed class WorkspaceStartupResolver
         var rulesetPath = _analyzerResolver.GetConfiguredRulesetPath(primary);
         _logger.LogInformation("Ruleset: {Path}", rulesetPath ?? "(none)");
 
-        return new WorkspaceStartupConfig(projects, analyzerPaths, rulesetPath);
+        // Like analyzers and the ruleset, almcp in MCP mode never reads this from settings.json
+        // itself; unbridged, it would look in .alpackages while the project keeps its symbols elsewhere.
+        var packageCachePaths = ProjectAnalyzerResolver.GetConfiguredPackageCachePaths(primary);
+        _logger.LogInformation("Package cache: {Paths}",
+            packageCachePaths is null ? ".alpackages (default)" : string.Join("; ", packageCachePaths));
+
+        return new WorkspaceStartupConfig(projects, analyzerPaths, rulesetPath, packageCachePaths);
     }
 
     private static void AddDistinct(List<string> paths, string path)
