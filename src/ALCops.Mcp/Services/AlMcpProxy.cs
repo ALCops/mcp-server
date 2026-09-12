@@ -87,10 +87,43 @@ public sealed class AlMcpProxy : IAsyncDisposable
         }
     }
 
+    // FindFreePort has to release the port before almcp can bind it, so another process can take it
+    // in between. Rare, but on a busy CI box it happens; a fresh port on the next attempt is the fix.
+    private const int MaxStartAttempts = 3;
+
     private async Task StartCoreAsync(CancellationToken cancellationToken)
     {
-        _port = FindFreePort();
+        for (var attempt = 1; ; attempt++)
+        {
+            _port = FindFreePort();
+            LaunchChild();
 
+            try
+            {
+                await WaitForServerReady(cancellationToken);
+                break;
+            }
+            catch (InvalidOperationException ex) when (attempt < MaxStartAttempts && _childProcess is { HasExited: true })
+            {
+                // Only an early *exit* is retried — almcp dies on "address already in use". A child
+                // that is alive but serves the wrong thing is a different problem and fails outright.
+                _logger.LogWarning(
+                    "almcp exited during startup on port {Port} (attempt {Attempt}/{Max}): {Message} Retrying on a new port.",
+                    _port, attempt, MaxStartAttempts, ex.Message);
+                _childProcess?.Dispose();
+                _childProcess = null;
+            }
+        }
+
+        // Through the gate, not by assignment: startup now runs concurrently with requests, and an
+        // early ForwardAsync would otherwise create a second client for the same child.
+        var client = await GetOrCreateClientAsync(cancellationToken);
+        _cachedTools = await client.ListToolsAsync(cancellationToken: cancellationToken);
+        _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
+    }
+
+    private void LaunchChild()
+    {
         var args = BuildChildArgs();
         _logger.LogInformation("Starting almcp on port {Port}: {Path} {Args}", _port, _almcpPath, string.Join(' ', args));
 
@@ -116,14 +149,6 @@ public sealed class AlMcpProxy : IAsyncDisposable
         _childProcess.ErrorDataReceived += (_, e) => LogChildLine(e.Data);
         _childProcess.BeginOutputReadLine();
         _childProcess.BeginErrorReadLine();
-
-        await WaitForServerReady(cancellationToken);
-
-        // Through the gate, not by assignment: startup now runs concurrently with requests, and an
-        // early ForwardAsync would otherwise create a second client for the same child.
-        var client = await GetOrCreateClientAsync(cancellationToken);
-        _cachedTools = await client.ListToolsAsync(cancellationToken: cancellationToken);
-        _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
     }
 
     private void LogChildLine(string? line)
@@ -385,9 +410,11 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
     /// <summary>
     /// almcp calls <c>MapMcp()</c> with no pattern, so the streamable-HTTP endpoint is the server
-    /// root — not <c>/mcp/</c>, which 404s.
+    /// root — not <c>/mcp/</c>, which 404s. It binds <c>localhost</c>, i.e. both loopback families;
+    /// we connect to the IPv4 one <see cref="FindFreePort"/> reserved rather than resolving
+    /// <c>localhost</c> per call and possibly trying <c>::1</c> first.
     /// </summary>
-    private Uri McpEndpoint => new($"http://localhost:{_port}/");
+    private Uri McpEndpoint => new($"http://127.0.0.1:{_port}/");
 
     private async Task<McpClient> CreateHttpClient(CancellationToken cancellationToken)
     {
