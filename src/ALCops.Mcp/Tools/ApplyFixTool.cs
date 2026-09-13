@@ -9,7 +9,7 @@ namespace ALCops.Mcp.Tools;
 public sealed class ApplyFixTool
 {
     [McpServerTool(Name = "apply_fix", ReadOnly = false, Destructive = false),
-     Description("Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk and returns a summary of what changed.")]
+     Description("Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk and returns a summary of what changed. Verify with al_compile (onlyErrors: false).")]
     public static async Task<string> ApplyFix(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,

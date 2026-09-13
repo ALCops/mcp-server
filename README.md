@@ -58,6 +58,10 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 
 > **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all.
 
+### Verifying a fix
+
+After `apply_fix` or `apply_fix_all`, use `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. `al_compile` awaits almcp's internal file watcher, so it picks up the on-disk change reliably. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. Only restarting the server gives a fully fresh almcp workspace.
+
 ## Analyzers
 
 **Analyzers are not bundled.** The server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json` (AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too). That includes ALCops' cops, BC's standard cops (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`), and any third-party analyzer.

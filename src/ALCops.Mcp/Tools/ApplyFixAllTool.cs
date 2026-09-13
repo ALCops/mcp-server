@@ -13,7 +13,8 @@ public sealed class ApplyFixAllTool
     [McpServerTool(Name = "apply_fix_all", ReadOnly = false, Destructive = false),
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
-        "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options.")]
+        "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
+        "Verify with al_compile (onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
