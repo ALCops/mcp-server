@@ -35,6 +35,16 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 > **Note:** v16 and earlier are not supported — the BC Development Tools DLLs introduced breaking API changes in v17. `almcp` also first shipped in v17, so on an older toolchain only the native tools below are available.
 
+### Platform support
+
+| OS | How `almcp` is launched | Notes |
+|----|-------------------------|-------|
+| Windows | Native `almcp.exe` | Ships in the nupkg. |
+| Linux | `dotnet almcp.dll` | The nupkg has no extension-less launcher; the server falls back to the dotnet host automatically. |
+| macOS | `dotnet almcp.dll` | Same as Linux. |
+
+The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work on every OS regardless of `almcp` availability.
+
 ## Tools
 
 ### Native (this server)
