@@ -10,7 +10,10 @@ namespace ALCops.Mcp.Tests;
 /// <summary>
 /// End-to-end: apply a native code fix, then ask almcp to recompile and verify the fixed
 /// diagnostic is gone. Regression guard for the "stale diagnostics after apply_fix" report
-/// (PR #20 known issue).
+/// (PR #20 known issue). <c>al_getdiagnostics</c> was observed to return zero diagnostics on
+/// this fixture because it reads the existing compilation without draining almcp's file watcher.
+/// Therefore <c>al_compile</c> with <c>onlyErrors: false</c> is the only verification path
+/// this suite covers.
 /// </summary>
 [Collection(ApplyFixAlMcpFixture.CollectionName)]
 public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITestOutputHelper output) : IDisposable
@@ -59,7 +62,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         var applyResult = await ApplyFixTool.ApplyFix(
             sessionManager, codeFixRunner, analyzerResolver,
             projectDir, filePath, "LC0020", line, column,
-            fixes[0].EquivalenceKey);
+            fixes[0].EquivalenceKey, analyzers: null, Cts.Token);
 
         Assert.Contains("\"applied\":true", applyResult);
 
@@ -74,30 +77,6 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
 
         Assert.False(afterText.Contains("LC0020"),
             $"LC0020 still reported after applying the fix — stale diagnostics.\n{afterText}");
-    }
-
-    /// <summary>
-    /// Skipped: <c>al_getdiagnostics</c> returns the cached compilation result — it does not
-    /// compile, it does not drain <c>ProjectWatcher</c>, and before any <c>al_compile</c> call
-    /// it reports zero diagnostics. This confirms the watcher-drain analysis (PR #20 background):
-    /// <c>al_getdiagnostics</c> is not a reliable post-fix verification path. Use
-    /// <c>al_compile</c> with <c>onlyErrors: false</c> instead.
-    /// </summary>
-    [AlMcpFact(Skip = "al_getdiagnostics returns cached diagnostics, not live analysis — " +
-        "it reports zero diagnostics before any al_compile has run, confirming the watcher-drain analysis.")]
-    public async Task ApplyFix_ThenAlGetDiagnostics_ReportsStaleDiagnostics()
-    {
-        var proxy = fixture.Proxy;
-        var projectDir = fixture.ProjectDir;
-
-        var before = await proxy.ForwardAsync("al_getdiagnostics",
-            Args(new { projectPath = projectDir }), Cts.Token);
-        var beforeText = ConcatTextContent(before);
-        output.WriteLine("=== al_getdiagnostics BEFORE fix ===");
-        output.WriteLine(beforeText);
-
-        Assert.True(beforeText.Contains("LC0020"),
-            $"Expected LC0020 in al_getdiagnostics output before applying the fix.\n{beforeText}");
     }
 }
 
