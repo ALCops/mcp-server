@@ -35,7 +35,9 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 ## Analyzers
 
-Analyzers are **not bundled**. The server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json` — ALCops' cops, BC's standard cops (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`), or any third-party analyzer. AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too, and the same configuration is handed to the child `almcp` so `al_compile` and `get_fixes` agree about which rules run and which are suppressed.
+Microsoft cops and third-party analyzers are **not bundled** — the server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json`. AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too, and the same configuration is handed to the child `almcp` so `al_compile` and `get_fixes` agree about which rules run and which are suppressed.
+
+ALCops' own analyzers are provisioned automatically at every startup: the server detects the installed DevTools target framework, downloads the matching `ALCops.Analyzers` NuGet package, and caches it under `~/.alcops/analyzers/`. Configure with `--alcops-analyzers` (`latest` | `prerelease` | `<version>` | `off`) or the `ALCOPS_ANALYZERS` environment variable.
 
 Browse the ALCops rules reference at [alcops.dev/docs/analyzers](https://alcops.dev/docs/analyzers/).
 

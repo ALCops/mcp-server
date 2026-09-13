@@ -7,6 +7,7 @@ public sealed record ProxyOptions(
     bool ProxyDisabled,
     string? DevToolsPath,
     string[]? Projects,
+    string? AlcopsAnalyzers,
     string[] PassthroughArgs)
 {
     // almcp's arg parsing (ALMcpOptions.ParseArguments) has three arities, and treating them all
@@ -31,6 +32,7 @@ public sealed record ProxyOptions(
         bool disabled = false;
         string? devToolsPath = null;
         string[]? projects = null;
+        string? alcopsAnalyzers = null;
         var passthroughArgs = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -49,6 +51,10 @@ public sealed record ProxyOptions(
 
                 case "--projects" when i + 1 < args.Length:
                     projects = args[++i].Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    continue;
+
+                case "--alcops-analyzers" when i + 1 < args.Length:
+                    alcopsAnalyzers = args[++i];
                     continue;
             }
 
@@ -69,6 +75,6 @@ public sealed record ProxyOptions(
             }
         }
 
-        return new ProxyOptions(disabled, devToolsPath, projects, [.. passthroughArgs]);
+        return new ProxyOptions(disabled, devToolsPath, projects, alcopsAnalyzers, [.. passthroughArgs]);
     }
 }

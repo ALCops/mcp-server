@@ -93,10 +93,12 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
     private async Task StartCoreAsync(CancellationToken cancellationToken)
     {
+        var resolverArgs = await _workspaceResolver.BuildAlMcpArgsAsync(_passthroughArgs);
+
         for (var attempt = 1; ; attempt++)
         {
             _port = FindFreePort();
-            LaunchChild();
+            LaunchChild(["--port", _port.ToString(), .. resolverArgs]);
 
             try
             {
@@ -122,9 +124,8 @@ public sealed class AlMcpProxy : IAsyncDisposable
         _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
     }
 
-    private void LaunchChild()
+    private void LaunchChild(string[] args)
     {
-        var args = BuildChildArgs();
         _logger.LogInformation("Starting almcp on port {Port}: {Path} {Args}", _port, _almcpPath, string.Join(' ', args));
 
         // Both streams must be captured. In HTTP mode almcp writes its banner, "Port: N" and the
@@ -351,13 +352,6 @@ public sealed class AlMcpProxy : IAsyncDisposable
         IsError = true,
         Content = [new TextContentBlock { Text = message }],
     };
-
-    private string[] BuildChildArgs()
-    {
-        // The workspace resolver supplies --projects/--codeanalyzers/--rulesetpath from the project's
-        // own config; anything the user passed through on our CLI overrides it.
-        return ["--port", _port.ToString(), .. _workspaceResolver.BuildAlMcpArgs(_passthroughArgs)];
-    }
 
     private static int FindFreePort()
     {
