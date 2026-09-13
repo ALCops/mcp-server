@@ -5,10 +5,10 @@ namespace ALCops.Mcp.Services;
 
 /// <summary>
 /// Locates the single directory that holds both the BC DevTools assemblies
-/// (<c>Microsoft.Dynamics.Nav.*.dll</c>) and Microsoft's <c>almcp</c> executable. Both delivery
-/// channels ship them side by side — the AL VS Code extension's <c>bin/</c> and the dotnet tool's
-/// <c>tools/&lt;tfm&gt;/any/</c> — so one locator serves both. That co-location is also what keeps
-/// our in-process code fixes loading the *same* <c>Nav.CodeAnalysis</c> the child <c>almcp</c> uses.
+/// (<c>Microsoft.Dynamics.Nav.*.dll</c>) and Microsoft's <c>almcp</c>. Probe order:
+/// <c>--devtools-path</c> → <c>BCDEVELOPMENTTOOLSPATH</c> → dotnet tool store → hard error.
+/// The AL VS Code extension is no longer probed; point <c>--devtools-path</c> at its
+/// <c>bin/&lt;platform&gt;</c> folder if needed.
 /// </summary>
 public sealed class BcToolsLocator
 {
@@ -125,14 +125,21 @@ public sealed class BcToolsLocator
         if (TryDotnetToolStore() is string fromStore)
             return Found("dotnet tool store", fromStore);
 
-        if (TryAlExtension() is string fromExtension)
-            return Found("AL VS Code extension", fromExtension);
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var storeDir = string.IsNullOrEmpty(home) ? "(unknown)" : Path.Combine(home, ".dotnet", "tools", ".store", PackageId);
+        var storeExists = !string.IsNullOrEmpty(home) && Directory.Exists(storeDir);
+        var envValue = Environment.GetEnvironmentVariable("BCDEVELOPMENTTOOLSPATH");
 
         throw new InvalidOperationException(
-            "BC Development Tools not found. Install them with:\n" +
-            "  dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools\n" +
-            "Alternatively install the AL Language extension for VS Code, set BCDEVELOPMENTTOOLSPATH, " +
-            "or pass --devtools-path <dir>.");
+            "BC Development Tools not found. Probed locations:\n" +
+            $"  --devtools-path:        (not supplied)\n" +
+            $"  BCDEVELOPMENTTOOLSPATH:  {(string.IsNullOrEmpty(envValue) ? "(unset)" : $"'{envValue}' (no {MarkerDll})")}\n" +
+            $"  dotnet tool store:      {storeDir} ({(storeExists ? "exists, but no supported version found" : "does not exist")})\n\n" +
+            "Install the BC Development Tools with:\n" +
+            "  dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools\n\n" +
+            "Or point at an existing installation:\n" +
+            "  --devtools-path <dir>   (directory containing " + MarkerDll + ")\n" +
+            "  BCDEVELOPMENTTOOLSPATH=<dir>");
     }
 
     private static string Found(string source, string path)
@@ -177,33 +184,6 @@ public sealed class BcToolsLocator
         {
             var packageDir = Path.Combine(versionDir, PackageId, Path.GetFileName(versionDir));
             if (Probe(packageDir) is string resolved)
-                return resolved;
-        }
-
-        return null;
-    }
-
-    private static string? TryAlExtension()
-    {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
-            return null;
-
-        const string prefix = "ms-dynamics-smb.al-";
-        string[] extensionRoots =
-        [
-            Path.Combine(home, ".vscode", "extensions"),
-            Path.Combine(home, ".vscode-insiders", "extensions"),
-            Path.Combine(home, ".vscode-server", "extensions"),
-        ];
-
-        var candidates = extensionRoots
-            .Where(Directory.Exists)
-            .SelectMany(root => SafeEnumerateDirectories(root, prefix + "*"));
-
-        foreach (var extensionDir in OrderByDescendingVersion(candidates, d => Path.GetFileName(d)[prefix.Length..]))
-        {
-            if (Probe(Path.Combine(extensionDir, "bin")) is string resolved)
                 return resolved;
         }
 

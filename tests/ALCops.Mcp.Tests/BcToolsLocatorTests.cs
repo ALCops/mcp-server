@@ -92,7 +92,7 @@ public class BcToolsLocatorTests : IDisposable
     public void Resolve_UnusableEnvironmentVariable_FallsThroughInsteadOfThrowing()
     {
         // A stale env var pointing at a directory without the DLLs must not be fatal — the
-        // tool store and AL extension are still worth probing.
+        // tool store is still worth probing.
         var stale = Path.Combine(_root, "stale");
         Directory.CreateDirectory(stale);
         Environment.SetEnvironmentVariable(EnvVar, stale);
@@ -106,6 +106,25 @@ public class BcToolsLocatorTests : IDisposable
         catch (InvalidOperationException ex)
         {
             // No BC toolchain on this machine at all: the error must name the install command.
+            Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
+        }
+    }
+
+    [Fact]
+    public void Resolve_NothingInstalled_ErrorNamesEveryProbeAndTheInstallCommand()
+    {
+        Environment.SetEnvironmentVariable(EnvVar, null);
+
+        try
+        {
+            // On machines with the tool store populated this resolves fine — nothing to assert.
+            BcToolsLocator.ResolveToolsDirectory();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Assert.Contains("--devtools-path", ex.Message);
+            Assert.Contains("BCDEVELOPMENTTOOLSPATH", ex.Message);
+            Assert.Contains("dotnet tool store", ex.Message);
             Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
         }
     }
