@@ -83,10 +83,10 @@ body:
       required: true
 
   - type: input
-    id: al-language-extension-version
+    id: bc-devtools-version
     attributes:
-      label: AL Language extension version
-      description: The server picks up the BC Development Tools from the AL Language VS Code extension, if installed.
+      label: BC Development Tools version
+      description: Find it with `dotnet tool list -g` (look for `microsoft.dynamics.businesscentral.development.tools`), or check the server's stderr startup log.
       placeholder: e.g., 18.0.41.39415
     validations:
       required: false

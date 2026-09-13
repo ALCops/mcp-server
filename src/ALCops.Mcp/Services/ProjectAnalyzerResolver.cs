@@ -6,6 +6,7 @@ public sealed class ProjectAnalyzerResolver
 {
     private readonly ExternalAnalyzerLoader _loader;
     private readonly RulesetLoader _rulesetLoader;
+    private readonly Task<string?>? _provisionerReady;
 
     public ProjectAnalyzerResolver(ExternalAnalyzerLoader loader, RulesetLoader rulesetLoader)
     {
@@ -13,11 +14,20 @@ public sealed class ProjectAnalyzerResolver
         _rulesetLoader = rulesetLoader;
     }
 
+    internal ProjectAnalyzerResolver(ExternalAnalyzerLoader loader, RulesetLoader rulesetLoader, AlcopsAnalyzerProvisioner provisioner)
+        : this(loader, rulesetLoader)
+    {
+        _provisionerReady = provisioner.Ready;
+    }
+
     public async Task<AnalyzerSet> ResolveAsync(
         string projectPath,
         IReadOnlyList<string>? analyzerSpecs = null,
         CancellationToken ct = default)
     {
+        if (_provisionerReady is not null)
+            await _provisionerReady;
+
         var specs = analyzerSpecs ?? ReadAnalyzerSpecsFromSettings(projectPath);
 
         var loaded = new List<LoadedAnalyzerAssembly>();

@@ -11,7 +11,7 @@ namespace ALCops.Mcp.Services;
 
 public sealed class AlMcpProxy : IAsyncDisposable
 {
-    private readonly string _almcpPath;
+    private readonly BcToolsLocator.AlMcpLaunch? _launch;
     private readonly WorkspaceStartupResolver _workspaceResolver;
     private readonly ILogger<AlMcpProxy> _logger;
     private readonly string[] _passthroughArgs;
@@ -50,23 +50,20 @@ public sealed class AlMcpProxy : IAsyncDisposable
         ILogger<AlMcpProxy> logger,
         string[]? passthroughArgs = null)
     {
-        _almcpPath = toolsLocator.AlMcpPath;
+        _launch = toolsLocator.AlMcp;
         _workspaceResolver = workspaceResolver;
         _logger = logger;
         _passthroughArgs = passthroughArgs ?? [];
 
-        // almcp ships alongside the DevTools DLLs from 17.0 onward; 16.2-and-earlier toolchains
-        // resolve fine but have no almcp, in which case only our native tools are served.
-        IsAvailable = toolsLocator.HasAlMcp;
+        IsAvailable = _launch is not null;
         if (IsAvailable)
         {
-            _logger.LogInformation("Found almcp at: {Path}", _almcpPath);
+            _logger.LogInformation("almcp: {Description} ({FileName})", _launch!.Description, _launch.FileName);
         }
         else
         {
-            // Nothing will ever start it, so settle Ready now rather than leave waiters parked.
             _ready.TrySetResult(false);
-            _logger.LogWarning("almcp not found at {Path}. MS AL MCP tools will be unavailable.", _almcpPath);
+            _logger.LogWarning("almcp not found. MS AL MCP tools will be unavailable.");
         }
     }
 
@@ -93,10 +90,12 @@ public sealed class AlMcpProxy : IAsyncDisposable
 
     private async Task StartCoreAsync(CancellationToken cancellationToken)
     {
+        var resolverArgs = await _workspaceResolver.BuildAlMcpArgsAsync(_passthroughArgs);
+
         for (var attempt = 1; ; attempt++)
         {
             _port = FindFreePort();
-            LaunchChild();
+            LaunchChild(["--port", _port.ToString(), .. resolverArgs]);
 
             try
             {
@@ -122,10 +121,10 @@ public sealed class AlMcpProxy : IAsyncDisposable
         _logger.LogInformation("Discovered {Count} tools from almcp", _cachedTools.Count);
     }
 
-    private void LaunchChild()
+    private void LaunchChild(string[] args)
     {
-        var args = BuildChildArgs();
-        _logger.LogInformation("Starting almcp on port {Port}: {Path} {Args}", _port, _almcpPath, string.Join(' ', args));
+        _logger.LogInformation("Starting almcp on port {Port}: {Description} {Args}",
+            _port, _launch!.Description, string.Join(' ', args));
 
         // Both streams must be captured. In HTTP mode almcp writes its banner, "Port: N" and the
         // project-load progress to *stdout* (Program.cs passes Console.WriteLine as the output
@@ -133,12 +132,14 @@ public sealed class AlMcpProxy : IAsyncDisposable
         // of the MCP JSON-RPC stream.
         var psi = new ProcessStartInfo
         {
-            FileName = _almcpPath,
+            FileName = _launch.FileName,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var arg in _launch.LeadingArgs)
+            psi.ArgumentList.Add(arg);
         foreach (var arg in args)
             psi.ArgumentList.Add(arg);
 
@@ -351,13 +352,6 @@ public sealed class AlMcpProxy : IAsyncDisposable
         IsError = true,
         Content = [new TextContentBlock { Text = message }],
     };
-
-    private string[] BuildChildArgs()
-    {
-        // The workspace resolver supplies --projects/--codeanalyzers/--rulesetpath from the project's
-        // own config; anything the user passed through on our CLI overrides it.
-        return ["--port", _port.ToString(), .. _workspaceResolver.BuildAlMcpArgs(_passthroughArgs)];
-    }
 
     private static int FindFreePort()
     {

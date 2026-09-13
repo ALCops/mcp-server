@@ -113,17 +113,16 @@ public sealed class AlMcpProxyTests(AlMcpFixture fixture) : IDisposable
 }
 
 /// <summary>
-/// Skips when almcp cannot be run here — a 16.2-and-earlier toolchain, or any non-Windows OS: the
-/// nupkg ships only <c>almcp.exe</c>/<c>almcp.dll</c> and no extension-less launcher, which is what
-/// <see cref="BcToolsLocator"/> looks for off Windows. Windows dev machines run these for real.
-/// (xunit 2.x has no <c>Assert.Skip</c>, so the decision has to be made at attribute construction.)
+/// Skips when almcp cannot be run here — a 16.2-and-earlier toolchain, or no DevTools at all.
+/// Set <c>ALCOPS_TESTS_REQUIRE_ALMCP=1</c> to turn skips into hard failures so CI never silently
+/// drops these tests when the tools are supposed to be present.
 /// </summary>
 internal sealed class AlMcpFactAttribute : FactAttribute
 {
     public AlMcpFactAttribute()
     {
         if (!AlMcpFixture.IsAvailable)
-            Skip = "almcp is not runnable here (16.2 toolchain, or no almcp launcher for this OS).";
+            Skip = "almcp is not runnable here (16.2 toolchain, or BC DevTools not found).";
     }
 }
 
@@ -138,19 +137,40 @@ public sealed class AlMcpFixture : IAsyncLifetime
     /// <summary>
     /// The restored DevTools folder. Unlike <see cref="TestAnalyzers.ToolsLocator"/> (which points
     /// at the test output, holding only the three Private=true DLLs) this is where almcp itself is.
+    /// The baked path wins when present (local dev); on CI, <c>BCDEVELOPMENTTOOLSPATH</c> is set by
+    /// the workflow and <see cref="BcToolsLocator.ResolveToolsDirectory"/> picks it up.
     /// </summary>
-    private static readonly string? BcToolsPath = typeof(AlMcpFixture).Assembly
-        .GetCustomAttributes<AssemblyMetadataAttribute>()
-        .FirstOrDefault(a => a.Key == "BcToolsPath")?.Value;
+    private static readonly string? BcToolsPath = ResolveBcToolsPath();
 
     private static readonly BcToolsLocator? Locator =
         string.IsNullOrEmpty(BcToolsPath) ? null : new BcToolsLocator(BcToolsPath);
 
     public static bool IsAvailable { get; } = Locator?.HasAlMcp == true;
 
+    private static readonly bool RequireAlMcp =
+        Environment.GetEnvironmentVariable("ALCOPS_TESTS_REQUIRE_ALMCP") is "1" or "true";
+
     public AlMcpProxy Proxy { get; private set; } = null!;
     public CapturingLogger Logger { get; } = new();
     public string ProjectDir { get; private set; } = string.Empty;
+
+    private static string? ResolveBcToolsPath()
+    {
+        var baked = typeof(AlMcpFixture).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "BcToolsPath")?.Value;
+        if (!string.IsNullOrEmpty(baked) && Directory.Exists(baked))
+            return baked;
+
+        try
+        {
+            return BcToolsLocator.ResolveToolsDirectory();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     /// <summary>
     /// A proxy over a fresh copy of the MinimalProject fixture, not yet started. The lifecycle tests
@@ -173,7 +193,13 @@ public sealed class AlMcpFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         if (!IsAvailable)
+        {
+            if (RequireAlMcp)
+                throw new InvalidOperationException(
+                    "ALCOPS_TESTS_REQUIRE_ALMCP is set but almcp is not available. " +
+                    "Ensure BC DevTools are extracted and BCDEVELOPMENTTOOLSPATH is set.");
             return;
+        }
 
         Proxy = CreateProxy(Logger, out var projectDir);
         ProjectDir = projectDir;

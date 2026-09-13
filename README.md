@@ -28,14 +28,22 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 }
 ```
 
-If you already have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension, the first install is optional — the server finds the tools in the extension instead.
-
 ## Requirements
 
 - [.NET 10.0](https://dotnet.microsoft.com/download/dotnet/10.0) SDK or Runtime
-- BC Development Tools **v18.0 or higher**, from either the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool or the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension
+- BC Development Tools **v18.0 or higher** from the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool. Alternatively, point `--devtools-path` or `BCDEVELOPMENTTOOLSPATH` at any directory containing the DevTools DLLs (e.g. the AL VS Code extension's `bin/<platform>` folder).
 
 > **Note:** v16 and earlier are not supported — the BC Development Tools DLLs introduced breaking API changes in v17. `almcp` also first shipped in v17, so on an older toolchain only the native tools below are available.
+
+### Platform support
+
+| OS | How `almcp` is launched | Notes |
+|----|-------------------------|-------|
+| Windows | Native `almcp.exe` | Ships in the nupkg. |
+| Linux | `dotnet almcp.dll` | The nupkg has no extension-less launcher; the server falls back to the dotnet host automatically. |
+| macOS | `dotnet almcp.dll` | Same as Linux. |
+
+The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work on every OS regardless of `almcp` availability.
 
 ## Tools
 
@@ -60,9 +68,28 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 
 ## Analyzers
 
-**Analyzers are not bundled.** The server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json` (AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too). That includes ALCops' cops, BC's standard cops (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`), and any third-party analyzer.
+**Microsoft cops and third-party analyzers are never bundled.** The server loads exactly what your project configures via `al.codeAnalyzers` in `.vscode/settings.json` — BC's standard cops (`${CodeCop}`, `${UICop}`, `${PerTenantExtensionCop}`, `${AppSourceCop}`) and any third-party analyzer resolve from the DevTools directory. AL-Go's `rulesetFile` and the `custom.ruleset.json` / `app.ruleset.json` conventions are honored too.
 
-This is deliberate: bundling pinned cop DLLs beside whatever `Nav.CodeAnalysis` you have installed is what produced `AD0001` / `MissingMethodException` failures ([#10](https://github.com/ALCops/mcp-server/issues/10)). Resolving both from your own toolchain makes that mismatch impossible.
+This is deliberate: bundling pinned cop DLLs beside whatever `Nav.CodeAnalysis` you have installed is what produced `AD0001` / `MissingMethodException` failures ([#10](https://github.com/ALCops/mcp-server/issues/10)).
+
+### ALCops analyzer provisioning
+
+ALCops' own analyzers (`${analyzerFolder}ALCops.*.dll`) are provisioned automatically at every startup. The server detects the installed DevTools' target framework (e.g. `net10.0`), downloads the latest stable [ALCops.Analyzers](https://www.nuget.org/packages/ALCops.Analyzers) NuGet package, extracts the matching `lib/<tfm>/` folder, and caches the DLLs under `~/.alcops/analyzers/<tfm>/<version>/`. On subsequent starts a newer stable version is picked up automatically; older cached versions are left in place.
+
+Configure with `--alcops-analyzers` or the `ALCOPS_ANALYZERS` environment variable:
+
+| Value | Behaviour |
+|-------|-----------|
+| `latest` (default) | Download the latest stable release. |
+| `prerelease` | Download the highest version including prereleases. |
+| `<version>` (e.g. `1.2.0`) | Pin to a specific version (no index lookup). |
+| `off` | Disable provisioning entirely. |
+
+Set `ALCOPS_ANALYZERS_CACHE` to override the default cache directory (`~/.alcops/analyzers`).
+
+When offline, the newest previously cached version for the target TFM is used with a warning. When no cache exists, the server starts without ALCops analyzers and logs a message with manual provisioning instructions.
+
+The recommended `al.codeAnalyzers` configuration:
 
 ```json
 {
@@ -79,14 +106,15 @@ Browse the ALCops rules reference at [alcops.dev/docs/analyzers](https://alcops.
 
 ## BC DevTools Resolution
 
-The DevTools DLLs and `almcp` live in the same directory in both delivery channels, so one lookup serves both. On startup the server searches, in order, and logs which one won:
+The DevTools DLLs and `almcp` live in the same directory, so one lookup serves both. On startup the server searches, in order, and logs which one won:
 
 1. `--devtools-path <dir>`
 2. `BCDEVELOPMENTTOOLSPATH` environment variable
 3. dotnet tool store (`~/.dotnet/tools/.store/…`) — highest version wins
-4. AL Language VS Code extension `bin/` — highest version wins
 
-If none match, the server exits with the install command rather than starting up degraded. Nothing is downloaded at runtime.
+The AL VS Code extension is no longer probed. If you use it as your only DevTools source, point `--devtools-path` at its `bin/<platform>` folder.
+
+If none match, the server exits with the exact install command and a list of what was checked, rather than starting up degraded. The DevTools themselves are never downloaded at runtime — only ALCops' own analyzers are provisioned from NuGet (see [Analyzers](#analyzers) above).
 
 ## CLI Options
 
@@ -95,6 +123,7 @@ If none match, the server exits with the install command rather than starting up
 | `--devtools-path <dir>` | Use this BC DevTools directory instead of probing. |
 | `--projects <dir>[;<dir>]` | Work on these projects instead of scanning down from the working directory for `app.json`. A directory that is not itself a project is scanned for projects beneath it; entries with none are ignored with a warning. |
 | `--no-proxy` | Serve only the native tools; do not start `almcp`. |
+| `--alcops-analyzers <mode>` | `latest` (default), `prerelease`, a pinned version, or `off`. See [Analyzers](#analyzers). |
 
 Arguments `almcp` understands — `--codeanalyzers`, `--rulesetpath`, `--settingspath`, `--enablecodeanalysis`, `--enableexternalrulesets`, `--locale`, `--noauth`, `--nolog` and friends — are forwarded to the child process and override anything discovered from your project.
 

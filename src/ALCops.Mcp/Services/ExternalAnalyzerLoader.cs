@@ -9,12 +9,17 @@ namespace ALCops.Mcp.Services;
 public sealed class ExternalAnalyzerLoader
 {
     private readonly BcToolsLocator _toolsLocator;
+    private readonly Func<string?>? _provisionedFolder;
     private readonly ConcurrentDictionary<string, LoadedAnalyzerAssembly> _cache = new(StringComparer.OrdinalIgnoreCase);
     private int _assemblyResolveRegistered;
 
     public ExternalAnalyzerLoader(BcToolsLocator toolsLocator)
+        : this(toolsLocator, null) { }
+
+    internal ExternalAnalyzerLoader(BcToolsLocator toolsLocator, Func<string?>? provisionedFolder)
     {
         _toolsLocator = toolsLocator;
+        _provisionedFolder = provisionedFolder;
     }
 
     public LoadedAnalyzerAssembly? ResolveAndLoad(AnalyzerSpec spec, string projectPath)
@@ -39,13 +44,29 @@ public sealed class ExternalAnalyzerLoader
         switch (spec.Kind)
         {
             case AnalyzerSpecKind.WellKnownBcCop:
-            case AnalyzerSpecKind.AnalyzerFolderRelative:
             {
                 var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, spec.GetDllFileName());
                 if (File.Exists(candidate))
                     return candidate;
 
-                // Fallback: project-local .vscode/analyzers/
+                var localPath = Path.Combine(projectPath, ".vscode", "analyzers", spec.GetDllFileName());
+                return File.Exists(localPath) ? localPath : null;
+            }
+
+            case AnalyzerSpecKind.AnalyzerFolderRelative:
+            {
+                var provisioned = _provisionedFolder?.Invoke();
+                if (provisioned is not null)
+                {
+                    var provCandidate = Path.Combine(provisioned, spec.GetDllFileName());
+                    if (File.Exists(provCandidate))
+                        return provCandidate;
+                }
+
+                var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, spec.GetDllFileName());
+                if (File.Exists(candidate))
+                    return candidate;
+
                 var localPath = Path.Combine(projectPath, ".vscode", "analyzers", spec.GetDllFileName());
                 return File.Exists(localPath) ? localPath : null;
             }
@@ -152,10 +173,19 @@ public sealed class ExternalAnalyzerLoader
             return;
 
         string[] searchPaths = [_toolsLocator.AnalyzerFolder, _toolsLocator.ToolsDirectory, AppContext.BaseDirectory];
+        var provisionedFunc = _provisionedFolder;
 
         AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
         {
             var dllName = new AssemblyName(args.Name).Name + ".dll";
+
+            var prov = provisionedFunc?.Invoke();
+            if (prov is not null)
+            {
+                var provCandidate = Path.Combine(prov, dllName);
+                if (File.Exists(provCandidate))
+                    return Assembly.LoadFrom(provCandidate);
+            }
 
             foreach (var dir in searchPaths)
             {
