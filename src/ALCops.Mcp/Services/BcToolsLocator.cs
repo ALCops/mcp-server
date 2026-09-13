@@ -21,23 +21,47 @@ public sealed class BcToolsLocator
     /// <summary>The directory holding the BC DevTools DLLs and <c>almcp</c>.</summary>
     public string ToolsDirectory { get; }
 
-    /// <summary>Full path to <c>almcp[.exe]</c>. May not exist on 16.2-and-earlier toolchains.</summary>
+    /// <summary>Full path to whichever almcp artifact was chosen (the native launcher or the DLL).</summary>
     public string AlMcpPath { get; }
 
     /// <summary>
-    /// Where <c>${CodeCop}</c> / <c>${analyzerFolder}</c> specs resolve to: the AL extension's
-    /// <c>Analyzers/</c> subfolder when present, otherwise the flat tools directory.
+    /// Where <c>${CodeCop}</c> / <c>${analyzerFolder}</c> specs resolve to: the <c>Analyzers/</c>
+    /// subfolder when present, otherwise the flat tools directory. ALCops' own analyzers come from the
+    /// provisioner (<see cref="AlcopsAnalyzerProvisioner"/>); this folder serves Microsoft cops and
+    /// manual layouts only.
     /// </summary>
     public string AnalyzerFolder { get; }
 
-    public bool HasAlMcp => File.Exists(AlMcpPath);
+    /// <summary>How to launch the child <c>almcp</c> process, or <c>null</c> on 16.2-and-earlier toolchains.</summary>
+    public AlMcpLaunch? AlMcp { get; }
+
+    public bool HasAlMcp => AlMcp is not null;
+
+    public sealed record AlMcpLaunch(string FileName, IReadOnlyList<string> LeadingArgs, string Description);
 
     public BcToolsLocator(string toolsDirectory)
     {
         ToolsDirectory = toolsDirectory;
 
-        var exeName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "almcp.exe" : "almcp";
-        AlMcpPath = Path.Combine(toolsDirectory, exeName);
+        var nativeExe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "almcp.exe" : "almcp";
+        var nativePath = Path.Combine(toolsDirectory, nativeExe);
+        var dllPath = Path.Combine(toolsDirectory, "almcp.dll");
+
+        if (File.Exists(nativePath))
+        {
+            AlMcp = new AlMcpLaunch(nativePath, [], "native launcher");
+            AlMcpPath = nativePath;
+        }
+        else if (File.Exists(dllPath))
+        {
+            var dotnetHost = DotnetHost.Resolve();
+            AlMcp = new AlMcpLaunch(dotnetHost, [dllPath], "dotnet almcp.dll");
+            AlMcpPath = dllPath;
+        }
+        else
+        {
+            AlMcpPath = nativePath;
+        }
 
         var analyzersSubfolder = Path.Combine(toolsDirectory, "Analyzers");
         AnalyzerFolder = Directory.Exists(analyzersSubfolder) ? analyzersSubfolder : toolsDirectory;
@@ -69,6 +93,11 @@ public sealed class BcToolsLocator
             Console.Error.WriteLine($"BC DevTools version: {version.FileVersion}");
         }
         catch { /* non-critical */ }
+
+        if (locator.AlMcp is { } launch)
+            Console.Error.WriteLine($"almcp: {launch.Description} ({launch.FileName})");
+        else
+            Console.Error.WriteLine("almcp: not found (16.2-and-earlier toolchain)");
 
         return locator;
     }

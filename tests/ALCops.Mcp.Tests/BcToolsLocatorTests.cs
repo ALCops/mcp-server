@@ -128,16 +128,46 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
-    public void AlMcpPath_SitsBesideTheDevToolsDlls()
+    public void AlMcp_PrefersNativeLauncher()
     {
-        var tools = CreateToolsDir("almcp");
+        var tools = CreateToolsDir("native");
+        var nativeExe = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows) ? "almcp.exe" : "almcp";
+        File.WriteAllText(Path.Combine(tools, nativeExe), "stub");
+        File.WriteAllText(Path.Combine(tools, "almcp.dll"), "stub");
+
         var locator = new BcToolsLocator(tools);
 
-        Assert.Equal(tools, Path.GetDirectoryName(locator.AlMcpPath));
-        Assert.False(locator.HasAlMcp);
-
-        // 16.2-and-earlier toolchains resolve fine but ship no almcp; 17.0+ do.
-        File.WriteAllText(locator.AlMcpPath, "stub");
         Assert.True(locator.HasAlMcp);
+        Assert.NotNull(locator.AlMcp);
+        Assert.Equal(Path.Combine(tools, nativeExe), locator.AlMcp.FileName);
+        Assert.Empty(locator.AlMcp.LeadingArgs);
+        Assert.Equal("native launcher", locator.AlMcp.Description);
+    }
+
+    [Fact]
+    public void AlMcp_FallsBackToDotnetWhenOnlyDllShips()
+    {
+        var tools = CreateToolsDir("dllonly");
+        File.WriteAllText(Path.Combine(tools, "almcp.dll"), "stub");
+
+        var locator = new BcToolsLocator(tools);
+
+        Assert.True(locator.HasAlMcp);
+        Assert.NotNull(locator.AlMcp);
+        Assert.EndsWith("dotnet", Path.GetFileNameWithoutExtension(locator.AlMcp.FileName));
+        Assert.Single(locator.AlMcp.LeadingArgs);
+        Assert.Equal(Path.Combine(tools, "almcp.dll"), locator.AlMcp.LeadingArgs[0]);
+        Assert.Equal("dotnet almcp.dll", locator.AlMcp.Description);
+    }
+
+    [Fact]
+    public void AlMcp_AbsentWhenNeitherShips()
+    {
+        var tools = CreateToolsDir("noalmcp");
+        var locator = new BcToolsLocator(tools);
+
+        Assert.False(locator.HasAlMcp);
+        Assert.Null(locator.AlMcp);
     }
 }
