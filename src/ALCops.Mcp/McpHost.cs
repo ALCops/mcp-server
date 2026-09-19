@@ -35,15 +35,44 @@ internal static class McpHost
         builder.Services.AddSingleton<ProjectLoader>();
         builder.Services.AddSingleton<ProjectSessionManager>();
         builder.Services.AddSingleton<CodeFixRunner>();
-        builder.Services.AddSingleton<ExternalAnalyzerLoader>();
+        builder.Services.AddSingleton(sp =>
+        {
+            var provisioner = sp.GetRequiredService<AlcopsAnalyzerProvisioner>();
+            Func<string?> provisionedFolder = () =>
+                provisioner.Ready is { IsCompletedSuccessfully: true, Result: not null }
+                    ? provisioner.Ready.Result
+                    : null;
+            return new ExternalAnalyzerLoader(
+                sp.GetRequiredService<BcToolsLocator>(),
+                provisionedFolder);
+        });
         builder.Services.AddSingleton<RulesetLoader>();
-        builder.Services.AddSingleton<ProjectAnalyzerResolver>();
+        builder.Services.AddSingleton(sp =>
+            new ProjectAnalyzerResolver(
+                sp.GetRequiredService<ExternalAnalyzerLoader>(),
+                sp.GetRequiredService<RulesetLoader>(),
+                sp.GetRequiredService<AlcopsAnalyzerProvisioner>()));
+
+        // ALCops analyzer provisioner: downloads ALCops' own analyzers from NuGet, matched to the
+        // installed DevTools TFM. Runs under --no-proxy too — the native fix tools need them.
+        var analyzersOption = AlcopsAnalyzersOption.Parse(
+            proxyOptions.AlcopsAnalyzers
+            ?? Environment.GetEnvironmentVariable("ALCOPS_ANALYZERS"));
+        builder.Services.AddSingleton(sp =>
+            new AlcopsAnalyzerProvisioner(
+                sp.GetRequiredService<BcToolsLocator>(),
+                analyzersOption,
+                null,
+                null,
+                sp.GetRequiredService<ILogger<AlcopsAnalyzerProvisioner>>()));
+        builder.Services.AddHostedService<AlcopsAnalyzerProvisionerStartup>();
 
         // Registered even with --no-proxy: list_rules falls back to the discovered project too.
         builder.Services.AddSingleton(sp =>
             new WorkspaceStartupResolver(
                 sp.GetRequiredService<ProjectAnalyzerResolver>(),
                 sp.GetRequiredService<ExternalAnalyzerLoader>(),
+                sp.GetRequiredService<AlcopsAnalyzerProvisioner>(),
                 sp.GetRequiredService<ILogger<WorkspaceStartupResolver>>(),
                 proxyOptions.Projects));
 

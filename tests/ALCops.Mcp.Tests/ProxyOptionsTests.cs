@@ -48,11 +48,21 @@ public class ProxyOptionsTests
     public void Parse_OurOwnFlags_AreConsumedNotForwarded()
     {
         var options = ProxyOptions.Parse(
-            ["--no-proxy", "--devtools-path", @"C:\tools", "--projects", @"C:\a;C:\b", "--nolog"]);
+            ["--no-proxy", "--devtools-path", @"C:\tools", "--projects", @"C:\a;C:\b", "--alcops-analyzers", "off", "--nolog"]);
 
         Assert.True(options.ProxyDisabled);
         Assert.Equal(@"C:\tools", options.DevToolsPath);
         Assert.Equal([@"C:\a", @"C:\b"], options.Projects ?? []);
+        Assert.Equal("off", options.AlcopsAnalyzers);
+        Assert.Equal(["--nolog"], options.PassthroughArgs);
+    }
+
+    [Fact]
+    public void Parse_AlcopsAnalyzers_IsConsumedNotForwarded()
+    {
+        var options = ProxyOptions.Parse(["--alcops-analyzers", "1.2.0", "--nolog"]);
+
+        Assert.Equal("1.2.0", options.AlcopsAnalyzers);
         Assert.Equal(["--nolog"], options.PassthroughArgs);
     }
 
@@ -70,6 +80,7 @@ public class ProxyOptionsTests
         Assert.False(options.ProxyDisabled);
         Assert.Null(options.DevToolsPath);
         Assert.Null(options.Projects);
+        Assert.Null(options.AlcopsAnalyzers);
         Assert.Empty(options.PassthroughArgs);
     }
 }

@@ -38,32 +38,68 @@ public sealed class WorkspaceStartupResolver
 
     private readonly ProjectAnalyzerResolver _analyzerResolver;
     private readonly ExternalAnalyzerLoader _loader;
+    private readonly AlcopsAnalyzerProvisioner? _provisioner;
     private readonly ILogger<WorkspaceStartupResolver> _logger;
     private readonly string[]? _explicitProjects;
-    private readonly Lazy<WorkspaceStartupConfig> _config;
+    private readonly Lazy<WorkspaceStartupConfig> _projectConfig;
 
     public WorkspaceStartupResolver(
         ProjectAnalyzerResolver analyzerResolver,
         ExternalAnalyzerLoader loader,
         ILogger<WorkspaceStartupResolver> logger,
         string[]? explicitProjects = null)
+        : this(analyzerResolver, loader, null, logger, explicitProjects) { }
+
+    internal WorkspaceStartupResolver(
+        ProjectAnalyzerResolver analyzerResolver,
+        ExternalAnalyzerLoader loader,
+        AlcopsAnalyzerProvisioner? provisioner,
+        ILogger<WorkspaceStartupResolver> logger,
+        string[]? explicitProjects = null)
     {
         _analyzerResolver = analyzerResolver;
         _loader = loader;
+        _provisioner = provisioner;
         _logger = logger;
         _explicitProjects = explicitProjects;
-        _config = new Lazy<WorkspaceStartupConfig>(Resolve);
+        _projectConfig = new Lazy<WorkspaceStartupConfig>(DiscoverProjectsOnly);
     }
 
-    public WorkspaceStartupConfig Config => _config.Value;
+    /// <summary>
+    /// Sync: project directories only. <c>PrimaryProject</c> is cheap; analyzer/ruleset fields are
+    /// empty. Use <see cref="GetConfigAsync"/> when the full config is needed.
+    /// </summary>
+    public WorkspaceStartupConfig Config => _projectConfig.Value;
+
+    /// <summary>
+    /// Async: awaits the provisioner (if present) then resolves the full config including analyzers,
+    /// rulesets, and package cache paths.
+    /// </summary>
+    public async Task<WorkspaceStartupConfig> GetConfigAsync()
+    {
+        if (_provisioner is not null)
+        {
+            var folder = await _provisioner.Ready;
+            if (folder is not null)
+                _logger.LogInformation("ALCops analyzers provisioned at {Folder}", folder);
+        }
+
+        return ResolveFullConfig();
+    }
 
     /// <summary>
     /// Composes the child <c>almcp</c> argument list, merged with any passthrough args the user gave
     /// us. User-supplied flags always win — we only fill in what they left unset.
     /// </summary>
-    public string[] BuildAlMcpArgs(IReadOnlyList<string> userArgs)
+    public string[] BuildAlMcpArgs(IReadOnlyList<string> userArgs) =>
+        ComposeAlMcpArgs(ResolveFullConfig(), userArgs);
+
+    /// <summary>Async variant that awaits the provisioner before resolving the full config.</summary>
+    public async Task<string[]> BuildAlMcpArgsAsync(IReadOnlyList<string> userArgs) =>
+        ComposeAlMcpArgs(await GetConfigAsync(), userArgs);
+
+    private static string[] ComposeAlMcpArgs(WorkspaceStartupConfig config, IReadOnlyList<string> userArgs)
     {
-        var config = Config;
         var userFlags = userArgs
             .Where(a => a.StartsWith("--", StringComparison.Ordinal))
             .Select(a => a.ToLowerInvariant())
@@ -93,8 +129,6 @@ public sealed class WorkspaceStartupResolver
         if (config.RulesetPath is not null)
             AddIfUnset("--rulesetpath", config.RulesetPath);
 
-        // Passed as written: almcp resolves relative entries against each project, exactly as the
-        // AL extension does, so a shared "../.alpackages" stays correct for every project.
         if (config.PackageCachePaths is { Count: > 0 })
             AddIfUnset("--packagecachepath", string.Join(';', config.PackageCachePaths));
 
@@ -102,7 +136,7 @@ public sealed class WorkspaceStartupResolver
         return [.. args];
     }
 
-    private WorkspaceStartupConfig Resolve()
+    private WorkspaceStartupConfig DiscoverProjectsOnly()
     {
         var projects = _explicitProjects is { Length: > 0 }
             ? ResolveExplicitProjects(_explicitProjects)
@@ -110,20 +144,26 @@ public sealed class WorkspaceStartupResolver
 
         if (projects.Count == 0)
         {
-            // Not fatal: almcp prints its own "use the al_addproject tool" hint, and every native
-            // tool takes projectPath per call. A silently wrong cwd guess is the only bad failure
-            // mode here, which is exactly why all of this is logged.
             _logger.LogWarning(
                 "No AL projects found under {Cwd} (scanned {Depth} levels for app.json). " +
                 "Pass --projects <dir>[;<dir>] to set them explicitly.",
                 Directory.GetCurrentDirectory(), MaxScanDepth);
-            return new WorkspaceStartupConfig([], [], null);
+        }
+        else
+        {
+            _logger.LogInformation("Discovered {Count} AL project(s): {Projects}",
+                projects.Count, string.Join(", ", projects));
         }
 
-        _logger.LogInformation("Discovered {Count} AL project(s): {Projects}",
-            projects.Count, string.Join(", ", projects));
+        return new WorkspaceStartupConfig(projects, [], null);
+    }
 
-        // The first project's configuration drives the child almcp — it has one global analyzer set.
+    private WorkspaceStartupConfig ResolveFullConfig()
+    {
+        var projects = Config.ProjectDirectories;
+        if (projects.Count == 0)
+            return Config;
+
         var primary = projects[0];
         if (projects.Count > 1)
             _logger.LogInformation("Using analyzer/ruleset configuration from {Project}", primary);
@@ -148,10 +188,6 @@ public sealed class WorkspaceStartupResolver
             _logger.LogInformation("Analyzer {Spec} -> {Path}", rawSpec, resolved);
             AddDistinct(analyzerPaths, Path.GetFullPath(resolved));
 
-            // almcp turns each --codeanalyzers entry into an AnalyzerFileReference and resolves
-            // dependencies only among the paths it was given — it does not probe the analyzer's own
-            // directory. Anything left out surfaces as AD0001 "analyzer threw FileNotFoundException"
-            // instead of the rule's diagnostics, so the dependencies have to travel with it.
             foreach (var dependency in SiblingDependencies(resolved))
             {
                 _logger.LogInformation("  dependency of {Spec}: {Path}", rawSpec, dependency);
@@ -167,8 +203,6 @@ public sealed class WorkspaceStartupResolver
         var rulesetPath = _analyzerResolver.GetConfiguredRulesetPath(primary);
         _logger.LogInformation("Ruleset: {Path}", rulesetPath ?? "(none)");
 
-        // Like analyzers and the ruleset, almcp in MCP mode never reads this from settings.json
-        // itself; unbridged, it would look in .alpackages while the project keeps its symbols elsewhere.
         var packageCachePaths = ProjectAnalyzerResolver.GetConfiguredPackageCachePaths(primary);
         _logger.LogInformation("Package cache: {Paths}",
             packageCachePaths is null ? ".alpackages (default)" : string.Join("; ", packageCachePaths));

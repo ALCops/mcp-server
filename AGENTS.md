@@ -26,7 +26,7 @@ A plain `PackageReference` is impossible: as of 17.0 the `Microsoft.Dynamics.Bus
 - `src` sets `<Private>false</Private>`, so the proprietary DLLs never enter the build output and therefore never enter the published package. This is the redistribution guard.
 - `tests` sets `<Private>true</Private>` on purpose: the CI compatibility matrix hot-swaps those three DLLs in the prebuilt test binary to run the same tests against every supported SDK version.
 
-At runtime `BcToolsLocator` finds the DLLs in the user's own toolchain. Nothing is downloaded at runtime.
+At runtime `BcToolsLocator` finds the DLLs in the user's own toolchain. The DevTools themselves are never downloaded at runtime; only ALCops' own analyzers are provisioned from NuGet (see below).
 
 ## Architecture
 
@@ -48,13 +48,16 @@ It is deliberately **thin**: Microsoft's `almcp` already compiles, runs diagnost
   - `WorkspaceStartupResolver` — discovers AL projects (mirrors `almcp`'s own `DiscoverProjectPaths`: downward scan for `app.json`, depth 4, standard exclusions) and composes the child `almcp`'s `--projects` / `--codeanalyzers` / `--rulesetpath` / `--packagecachepath` args. `almcp` in MCP mode never reads `.vscode/settings.json` and has no per-call analyzer, ruleset or package-cache parameter, so this bridge at launch is the only thing keeping `al_compile` and our fix tools in agreement (`ProjectLoader` reads the same `al.packageCachePath` for the in-process compilation).
   - `AlMcpProxy` — child process lifecycle plus generic tool forwarding over a single long-lived MCP client that reconnects on session expiry. `ForwardAsync` is a passthrough with **no per-tool argument rewriting**; configuration is conveyed at launch instead.
   - `ProjectAnalyzerResolver` — reads `al.codeAnalyzers` and the ruleset (`.vscode/settings.json`, `.AL-Go/settings.json`, convention-named files) and builds an `AnalyzerSet`. Nothing is built in.
+  - `AlcopsAnalyzerProvisioner` — downloads ALCops' own analyzers from NuGet, matched to the installed DevTools TFM, and caches them under `~/.alcops/analyzers/`. `Task<string?> Ready` completes with the provisioned folder or `null`. Configured via `--alcops-analyzers` / `ALCOPS_ANALYZERS` / `ALCOPS_ANALYZERS_CACHE`.
   - `ExternalAnalyzerLoader` — loads analyzer DLLs through `AnalyzerAssemblyLoadContext`, which resolves shared types by simple name from the default context. That type sharing is what makes `typeof(DiagnosticAnalyzer).IsAssignableFrom` work, and therefore what makes in-process code fixes possible at all.
   - `ProjectSessionManager` / `ProjectLoader` — caches AL project workspaces keyed by path; `GetOrLoadProjectAsync` is the entry point tools use.
 - **Models/** — record types for tool return values, serialized with `JsonDefaults.Options` (camelCase, not indented).
 
-### Analyzers are never bundled
+### Analyzers are never bundled; ALCops' own analyzers are provisioned at runtime
 
-Shipping pinned cop DLLs beside whatever `Nav.CodeAnalysis` the user installed is what caused `AD0001` / `MissingMethodException` (issue #10). Analyzers come solely from the project's own config. `ALCops.Analyzers` is referenced by the **test project only**, so the fixtures have real cops with real code fixes to exercise; it must never move back to `src`.
+Shipping pinned cop DLLs beside whatever `Nav.CodeAnalysis` the user installed is what caused `AD0001` / `MissingMethodException` (issue #10). Microsoft cops and third-party analyzers come solely from the project's own config and the DevTools directory. `ALCops.Analyzers` is referenced by the **test project only**, so the fixtures have real cops with real code fixes to exercise; it must never move back to `src`.
+
+ALCops' own analyzers are provisioned by `AlcopsAnalyzerProvisioner` at every startup: it detects the DevTools TFM, downloads the latest stable `ALCops.Analyzers` NuGet package (or uses a pinned/prerelease version per `--alcops-analyzers`), extracts the matching `lib/<tfm>/` folder, and caches the DLLs under `~/.alcops/analyzers/<tfm>/<version>/`. `ExternalAnalyzerLoader.ResolveDllPath` probes the provisioned folder first for `${analyzerFolder}ALCops.*.dll` specs. The DevTools themselves are never downloaded at runtime.
 
 When passing analyzers to the child `almcp`, their sibling dependencies must travel with them (`ALCops.Common.dll`, `Microsoft.Dynamics.Nav.Analyzers.Common.dll`): `almcp` resolves analyzer dependencies only among the paths it was given and does not probe the analyzer's directory. A missing one turns every rule in that assembly into an `AD0001` instead of a diagnostic.
 
