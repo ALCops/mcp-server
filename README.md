@@ -28,14 +28,22 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 }
 ```
 
-If you already have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension, the first install is optional — the server finds the tools in the extension instead.
-
 ## Requirements
 
 - [.NET 10.0](https://dotnet.microsoft.com/download/dotnet/10.0) SDK or Runtime
-- BC Development Tools **v18.0 or higher**, from either the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool or the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension
+- BC Development Tools **v18.0 or higher** from the `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool. Alternatively, point `--devtools-path` or `BCDEVELOPMENTTOOLSPATH` at any directory containing the DevTools DLLs (e.g. the AL VS Code extension's `bin/<platform>` folder).
 
 > **Note:** v16 and earlier are not supported — the BC Development Tools DLLs introduced breaking API changes in v17. `almcp` also first shipped in v17, so on an older toolchain only the native tools below are available.
+
+### Platform support
+
+| OS | How `almcp` is launched | Notes |
+|----|-------------------------|-------|
+| Windows | Native `almcp.exe` | Ships in the nupkg. |
+| Linux | `dotnet almcp.dll` | The nupkg has no extension-less launcher; the server falls back to the dotnet host automatically. |
+| macOS | `dotnet almcp.dll` | Same as Linux. |
+
+The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work on every OS regardless of `almcp` availability.
 
 ## Tools
 
@@ -102,14 +110,15 @@ Browse the ALCops rules reference at [alcops.dev/docs/analyzers](https://alcops.
 
 ## BC DevTools Resolution
 
-The DevTools DLLs and `almcp` live in the same directory in both delivery channels, so one lookup serves both. On startup the server searches, in order, and logs which one won:
+The DevTools DLLs and `almcp` live in the same directory, so one lookup serves both. On startup the server searches, in order, and logs which one won:
 
 1. `--devtools-path <dir>`
 2. `BCDEVELOPMENTTOOLSPATH` environment variable
 3. dotnet tool store (`~/.dotnet/tools/.store/…`) — highest version wins
-4. AL Language VS Code extension `bin/` — highest version wins
 
-If none match, the server exits with the install command rather than starting up degraded. The DevTools themselves are never downloaded at runtime — only ALCops' own analyzers are provisioned from NuGet (see [Analyzers](#analyzers) above).
+The AL VS Code extension is no longer probed. If you use it as your only DevTools source, point `--devtools-path` at its `bin/<platform>` folder.
+
+If none match, the server exits with the exact install command and a list of what was checked, rather than starting up degraded. The DevTools themselves are never downloaded at runtime — only ALCops' own analyzers are provisioned from NuGet (see [Analyzers](#analyzers) above).
 
 ## CLI Options
 

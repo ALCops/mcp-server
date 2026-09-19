@@ -92,7 +92,7 @@ public class BcToolsLocatorTests : IDisposable
     public void Resolve_UnusableEnvironmentVariable_FallsThroughInsteadOfThrowing()
     {
         // A stale env var pointing at a directory without the DLLs must not be fatal — the
-        // tool store and AL extension are still worth probing.
+        // tool store is still worth probing.
         var stale = Path.Combine(_root, "stale");
         Directory.CreateDirectory(stale);
         Environment.SetEnvironmentVariable(EnvVar, stale);
@@ -106,6 +106,25 @@ public class BcToolsLocatorTests : IDisposable
         catch (InvalidOperationException ex)
         {
             // No BC toolchain on this machine at all: the error must name the install command.
+            Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
+        }
+    }
+
+    [Fact]
+    public void Resolve_NothingInstalled_ErrorNamesEveryProbeAndTheInstallCommand()
+    {
+        Environment.SetEnvironmentVariable(EnvVar, null);
+
+        try
+        {
+            // On machines with the tool store populated this resolves fine — nothing to assert.
+            BcToolsLocator.ResolveToolsDirectory();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Assert.Contains("--devtools-path", ex.Message);
+            Assert.Contains("BCDEVELOPMENTTOOLSPATH", ex.Message);
+            Assert.Contains("dotnet tool store", ex.Message);
             Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
         }
     }
@@ -128,16 +147,46 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
-    public void AlMcpPath_SitsBesideTheDevToolsDlls()
+    public void AlMcp_PrefersNativeLauncher()
     {
-        var tools = CreateToolsDir("almcp");
+        var tools = CreateToolsDir("native");
+        var nativeExe = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows) ? "almcp.exe" : "almcp";
+        File.WriteAllText(Path.Combine(tools, nativeExe), "stub");
+        File.WriteAllText(Path.Combine(tools, "almcp.dll"), "stub");
+
         var locator = new BcToolsLocator(tools);
 
-        Assert.Equal(tools, Path.GetDirectoryName(locator.AlMcpPath));
-        Assert.False(locator.HasAlMcp);
-
-        // 16.2-and-earlier toolchains resolve fine but ship no almcp; 17.0+ do.
-        File.WriteAllText(locator.AlMcpPath, "stub");
         Assert.True(locator.HasAlMcp);
+        Assert.NotNull(locator.AlMcp);
+        Assert.Equal(Path.Combine(tools, nativeExe), locator.AlMcp.FileName);
+        Assert.Empty(locator.AlMcp.LeadingArgs);
+        Assert.Equal("native launcher", locator.AlMcp.Description);
+    }
+
+    [Fact]
+    public void AlMcp_FallsBackToDotnetWhenOnlyDllShips()
+    {
+        var tools = CreateToolsDir("dllonly");
+        File.WriteAllText(Path.Combine(tools, "almcp.dll"), "stub");
+
+        var locator = new BcToolsLocator(tools);
+
+        Assert.True(locator.HasAlMcp);
+        Assert.NotNull(locator.AlMcp);
+        Assert.EndsWith("dotnet", Path.GetFileNameWithoutExtension(locator.AlMcp.FileName));
+        Assert.Single(locator.AlMcp.LeadingArgs);
+        Assert.Equal(Path.Combine(tools, "almcp.dll"), locator.AlMcp.LeadingArgs[0]);
+        Assert.Equal("dotnet almcp.dll", locator.AlMcp.Description);
+    }
+
+    [Fact]
+    public void AlMcp_AbsentWhenNeitherShips()
+    {
+        var tools = CreateToolsDir("noalmcp");
+        var locator = new BcToolsLocator(tools);
+
+        Assert.False(locator.HasAlMcp);
+        Assert.Null(locator.AlMcp);
     }
 }

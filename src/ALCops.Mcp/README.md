@@ -9,7 +9,7 @@ dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools
 dotnet tool install -g ALCops.Mcp
 ```
 
-The first install is optional if you already have the [AL Language](https://marketplace.visualstudio.com/items?itemName=ms-dynamics-smb.al) VS Code extension — the server finds the BC Development Tools there instead. Nothing is downloaded at runtime; if neither is present the server exits with the install command.
+Alternatively, point `--devtools-path` or `BCDEVELOPMENTTOOLSPATH` at any directory containing the DevTools DLLs. Nothing is downloaded at runtime except ALCops' own analyzers (from NuGet); if no DevTools are found the server exits with the install command.
 
 ## Configure
 

@@ -5,10 +5,10 @@ namespace ALCops.Mcp.Services;
 
 /// <summary>
 /// Locates the single directory that holds both the BC DevTools assemblies
-/// (<c>Microsoft.Dynamics.Nav.*.dll</c>) and Microsoft's <c>almcp</c> executable. Both delivery
-/// channels ship them side by side — the AL VS Code extension's <c>bin/</c> and the dotnet tool's
-/// <c>tools/&lt;tfm&gt;/any/</c> — so one locator serves both. That co-location is also what keeps
-/// our in-process code fixes loading the *same* <c>Nav.CodeAnalysis</c> the child <c>almcp</c> uses.
+/// (<c>Microsoft.Dynamics.Nav.*.dll</c>) and Microsoft's <c>almcp</c>. Probe order:
+/// <c>--devtools-path</c> → <c>BCDEVELOPMENTTOOLSPATH</c> → dotnet tool store → hard error.
+/// The AL VS Code extension is no longer probed; point <c>--devtools-path</c> at its
+/// <c>bin/&lt;platform&gt;</c> folder if needed.
 /// </summary>
 public sealed class BcToolsLocator
 {
@@ -21,23 +21,47 @@ public sealed class BcToolsLocator
     /// <summary>The directory holding the BC DevTools DLLs and <c>almcp</c>.</summary>
     public string ToolsDirectory { get; }
 
-    /// <summary>Full path to <c>almcp[.exe]</c>. May not exist on 16.2-and-earlier toolchains.</summary>
+    /// <summary>Full path to whichever almcp artifact was chosen (the native launcher or the DLL).</summary>
     public string AlMcpPath { get; }
 
     /// <summary>
-    /// Where <c>${CodeCop}</c> / <c>${analyzerFolder}</c> specs resolve to: the AL extension's
-    /// <c>Analyzers/</c> subfolder when present, otherwise the flat tools directory.
+    /// Where <c>${CodeCop}</c> / <c>${analyzerFolder}</c> specs resolve to: the <c>Analyzers/</c>
+    /// subfolder when present, otherwise the flat tools directory. ALCops' own analyzers come from the
+    /// provisioner (<see cref="AlcopsAnalyzerProvisioner"/>); this folder serves Microsoft cops and
+    /// manual layouts only.
     /// </summary>
     public string AnalyzerFolder { get; }
 
-    public bool HasAlMcp => File.Exists(AlMcpPath);
+    /// <summary>How to launch the child <c>almcp</c> process, or <c>null</c> on 16.2-and-earlier toolchains.</summary>
+    public AlMcpLaunch? AlMcp { get; }
+
+    public bool HasAlMcp => AlMcp is not null;
+
+    public sealed record AlMcpLaunch(string FileName, IReadOnlyList<string> LeadingArgs, string Description);
 
     public BcToolsLocator(string toolsDirectory)
     {
         ToolsDirectory = toolsDirectory;
 
-        var exeName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "almcp.exe" : "almcp";
-        AlMcpPath = Path.Combine(toolsDirectory, exeName);
+        var nativeExe = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "almcp.exe" : "almcp";
+        var nativePath = Path.Combine(toolsDirectory, nativeExe);
+        var dllPath = Path.Combine(toolsDirectory, "almcp.dll");
+
+        if (File.Exists(nativePath))
+        {
+            AlMcp = new AlMcpLaunch(nativePath, [], "native launcher");
+            AlMcpPath = nativePath;
+        }
+        else if (File.Exists(dllPath))
+        {
+            var dotnetHost = DotnetHost.Resolve();
+            AlMcp = new AlMcpLaunch(dotnetHost, [dllPath], "dotnet almcp.dll");
+            AlMcpPath = dllPath;
+        }
+        else
+        {
+            AlMcpPath = nativePath;
+        }
 
         var analyzersSubfolder = Path.Combine(toolsDirectory, "Analyzers");
         AnalyzerFolder = Directory.Exists(analyzersSubfolder) ? analyzersSubfolder : toolsDirectory;
@@ -70,6 +94,11 @@ public sealed class BcToolsLocator
         }
         catch { /* non-critical */ }
 
+        if (locator.AlMcp is { } launch)
+            Console.Error.WriteLine($"almcp: {launch.Description} ({launch.FileName})");
+        else
+            Console.Error.WriteLine("almcp: not found (16.2-and-earlier toolchain)");
+
         return locator;
     }
 
@@ -96,14 +125,21 @@ public sealed class BcToolsLocator
         if (TryDotnetToolStore() is string fromStore)
             return Found("dotnet tool store", fromStore);
 
-        if (TryAlExtension() is string fromExtension)
-            return Found("AL VS Code extension", fromExtension);
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var storeDir = string.IsNullOrEmpty(home) ? "(unknown)" : Path.Combine(home, ".dotnet", "tools", ".store", PackageId);
+        var storeExists = !string.IsNullOrEmpty(home) && Directory.Exists(storeDir);
+        var envValue = Environment.GetEnvironmentVariable("BCDEVELOPMENTTOOLSPATH");
 
         throw new InvalidOperationException(
-            "BC Development Tools not found. Install them with:\n" +
-            "  dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools\n" +
-            "Alternatively install the AL Language extension for VS Code, set BCDEVELOPMENTTOOLSPATH, " +
-            "or pass --devtools-path <dir>.");
+            "BC Development Tools not found. Probed locations:\n" +
+            $"  --devtools-path:        (not supplied)\n" +
+            $"  BCDEVELOPMENTTOOLSPATH:  {(string.IsNullOrEmpty(envValue) ? "(unset)" : $"'{envValue}' (no {MarkerDll})")}\n" +
+            $"  dotnet tool store:      {storeDir} ({(storeExists ? "exists, but no supported version found" : "does not exist")})\n\n" +
+            "Install the BC Development Tools with:\n" +
+            "  dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools\n\n" +
+            "Or point at an existing installation:\n" +
+            "  --devtools-path <dir>   (directory containing " + MarkerDll + ")\n" +
+            "  BCDEVELOPMENTTOOLSPATH=<dir>");
     }
 
     private static string Found(string source, string path)
@@ -148,33 +184,6 @@ public sealed class BcToolsLocator
         {
             var packageDir = Path.Combine(versionDir, PackageId, Path.GetFileName(versionDir));
             if (Probe(packageDir) is string resolved)
-                return resolved;
-        }
-
-        return null;
-    }
-
-    private static string? TryAlExtension()
-    {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
-            return null;
-
-        const string prefix = "ms-dynamics-smb.al-";
-        string[] extensionRoots =
-        [
-            Path.Combine(home, ".vscode", "extensions"),
-            Path.Combine(home, ".vscode-insiders", "extensions"),
-            Path.Combine(home, ".vscode-server", "extensions"),
-        ];
-
-        var candidates = extensionRoots
-            .Where(Directory.Exists)
-            .SelectMany(root => SafeEnumerateDirectories(root, prefix + "*"));
-
-        foreach (var extensionDir in OrderByDescendingVersion(candidates, d => Path.GetFileName(d)[prefix.Length..]))
-        {
-            if (Probe(Path.Combine(extensionDir, "bin")) is string resolved)
                 return resolved;
         }
 
