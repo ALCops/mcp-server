@@ -186,7 +186,7 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
     }
 
-    private string ExtractPackage(string nupkgPath, string version, string tfm, string sourceUrl)
+    internal string ExtractPackage(string nupkgPath, string version, string tfm, string sourceUrl)
     {
         using var zip = ZipFile.OpenRead(nupkgPath);
 
@@ -248,6 +248,13 @@ internal sealed class AlcopsAnalyzerProvisioner
 
             Directory.CreateDirectory(Path.GetDirectoryName(targetDir)!);
 
+            if (Directory.Exists(targetDir) && !IsCacheValid(targetDir))
+            {
+                _logger.LogInformation("Replacing incomplete cache directory {Dir}", targetDir);
+                try { Directory.Delete(targetDir, recursive: true); }
+                catch (IOException ex) { _logger.LogDebug(ex, "Could not delete incomplete cache directory {Dir}", targetDir); }
+            }
+
             try
             {
                 Directory.Move(tempDir, targetDir);
@@ -255,6 +262,9 @@ internal sealed class AlcopsAnalyzerProvisioner
             catch (IOException) when (Directory.Exists(targetDir))
             {
                 try { Directory.Delete(tempDir, recursive: true); } catch { }
+                if (!IsCacheValid(targetDir))
+                    throw new IOException($"ALCops analyzers: {targetDir} exists but is incomplete and could not be replaced");
+                _logger.LogInformation("v{Version} was provisioned concurrently; using {Dir}", version, targetDir);
             }
 
             _logger.LogInformation("ALCops analyzers: v{Version} ({Tfm}) provisioned to {Dir}", version, bestTfm, targetDir);

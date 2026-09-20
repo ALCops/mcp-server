@@ -259,6 +259,58 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     }
 
     [Fact]
+    public async Task Provision_HalfExtractedCacheDir_IsReplaced()
+    {
+        SeedInvalidCache("1.2.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(result));
+        Assert.True(File.Exists(Path.Combine(result, "ALCops.Fake.dll")));
+
+        var tfmDir = Path.Combine(_cacheRoot, Tfm);
+        var tmpDirs = Directory.EnumerateDirectories(tfmDir, "*.tmp-*");
+        Assert.Empty(tmpDirs);
+    }
+
+    [Fact]
+    public void ExtractPackage_TargetAlreadyValid_KeepsExistingCopy()
+    {
+        var dir = SeedCache("1.2.0");
+        var dllPath = Path.Combine(dir, "ALCops.Fake.dll");
+        var oldBytes = File.ReadAllBytes(dllPath);
+
+        var nupkgPath = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}.nupkg");
+        try
+        {
+            File.WriteAllBytes(nupkgPath, BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+            var handler = new FakeHandler();
+            var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            var result = provisioner.ExtractPackage(nupkgPath, "1.2.0", Tfm, "test");
+
+            Assert.Equal(dir, result);
+            Assert.Equal(oldBytes, File.ReadAllBytes(dllPath));
+
+            var tfmDir = Path.Combine(_cacheRoot, Tfm);
+            var tmpDirs = Directory.EnumerateDirectories(tfmDir, "*.tmp-*");
+            Assert.Empty(tmpDirs);
+        }
+        finally
+        {
+            try { File.Delete(nupkgPath); } catch { }
+        }
+    }
+
+    [Fact]
     public async Task Provision_CallerCancelled_ReadyIsNull_EvenWithCache()
     {
         SeedCache("1.1.0");
