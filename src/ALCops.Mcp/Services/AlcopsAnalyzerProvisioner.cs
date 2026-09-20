@@ -362,12 +362,26 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         }
     }
 
+    /// <summary>
+    /// Falls back to the newest cached version, including prereleases: loading a prerelease
+    /// with a warning beats running without ALCops rules when NuGet is unreachable.
+    /// </summary>
     private string? FallbackToCacheOrWarn(string tfm)
     {
         var cached = FindNewestCachedVersion(tfm);
         if (cached is not null)
         {
-            _logger.LogWarning("ALCops analyzers: using cached version from {Dir}", cached);
+            if (_option.Mode == AlcopsAnalyzersMode.Latest
+                && SemanticVersion.TryParse(Path.GetFileName(cached), out var v) && !v.IsStable)
+            {
+                _logger.LogWarning(
+                    "ALCops analyzers: NuGet unreachable and no stable version cached; using prerelease v{Version} from {Dir} as a last resort",
+                    Path.GetFileName(cached), cached);
+            }
+            else
+            {
+                _logger.LogWarning("ALCops analyzers: using cached version from {Dir}", cached);
+            }
             return cached;
         }
 
@@ -417,40 +431,48 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         return best;
     }
 
+    // Housekeeping only — must never influence Ready.
     private void SweepStaleTempDirectories()
     {
-        if (!Directory.Exists(_cacheRoot))
-            return;
-
-        var count = 0;
-        foreach (var tfmDir in BcToolsLocator.SafeEnumerateDirectories(_cacheRoot))
+        try
         {
-            foreach (var dir in BcToolsLocator.SafeEnumerateDirectories(tfmDir, "*.tmp-*"))
-            {
-                try
-                {
-                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
-                        continue;
+            if (!Directory.Exists(_cacheRoot))
+                return;
 
-                    try { using var probe = AcquireInUseLock(dir); }
+            var count = 0;
+            foreach (var tfmDir in BcToolsLocator.SafeEnumerateDirectories(_cacheRoot))
+            {
+                foreach (var dir in BcToolsLocator.SafeEnumerateDirectories(tfmDir, "*.tmp-*"))
+                {
+                    try
+                    {
+                        if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
+                            continue;
+
+                        try { using var probe = AcquireInUseLock(dir); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
+                            continue;
+                        }
+
+                        Directory.Delete(dir, recursive: true);
+                        count++;
+                    }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
-                        _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
-                        continue;
+                        _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
                     }
-
-                    Directory.Delete(dir, recursive: true);
-                    count++;
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
                 }
             }
-        }
 
-        if (count > 0)
-            _logger.LogInformation("ALCops analyzers: removed {Count} stale extraction directories", count);
+            if (count > 0)
+                _logger.LogInformation("ALCops analyzers: removed {Count} stale extraction directories", count);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "ALCops analyzers: sweep of stale extraction directories aborted");
+        }
     }
 
     internal static bool IsCacheValid(string cacheDir)

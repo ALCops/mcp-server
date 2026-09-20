@@ -486,6 +486,61 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     }
 
     [Fact]
+    public async Task Sweep_EnumerationFailure_DoesNotFailProvisioning()
+    {
+        var cached = SeedCache("1.1.0");
+
+        // A stale *.tmp-* dir with a locked file: the sweep acquires the .in-use
+        // probe successfully but Directory.Delete throws IOException, exercising
+        // the per-directory catch on every platform.
+        var staleDir = Path.Combine(_cacheRoot, Tfm, "1.0.0.tmp-locked");
+        Directory.CreateDirectory(staleDir);
+        Directory.SetLastWriteTimeUtc(staleDir, DateTime.UtcNow.AddHours(-2));
+        var lockFile = Path.Combine(staleDir, "locked.bin");
+        File.WriteAllBytes(lockFile, [0x00]);
+
+        FileStream? holdLock = null;
+        string? unreadableDir = null;
+        try
+        {
+            holdLock = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            // On Unix (non-root): make a TFM folder unreadable so the lazy enumerator
+            // inside SafeEnumerateDirectories throws on the first MoveNext, exercising
+            // the outer try/catch in SweepStaleTempDirectories. On Windows, lazy-
+            // enumeration failures from concurrent deletions cannot be triggered
+            // deterministically; only the delete-failure case is tested there.
+            if (!OperatingSystem.IsWindows() && !Environment.IsPrivilegedProcess)
+            {
+                unreadableDir = Path.Combine(_cacheRoot, "unreadable-tfm");
+                Directory.CreateDirectory(unreadableDir);
+#pragma warning disable CA1416
+                File.SetUnixFileMode(unreadableDir, UnixFileMode.None);
+#pragma warning restore CA1416
+            }
+
+            var handler = new FakeHandler { ThrowOnRequest = true };
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            await provisioner.ProvisionAsync(CancellationToken.None);
+            var result = await provisioner.Ready;
+
+            Assert.NotNull(result);
+            Assert.Equal(cached, result);
+            Assert.True(Directory.Exists(staleDir), "Locked directory should survive the sweep");
+        }
+        finally
+        {
+            holdLock?.Dispose();
+            if (unreadableDir is not null)
+            {
+#pragma warning disable CA1416
+                File.SetUnixFileMode(unreadableDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+#pragma warning restore CA1416
+            }
+        }
+    }
+
+    [Fact]
     public async Task Provision_WarmCache_ReadyFromCache_RefreshDownloadsNewerForNextStart()
     {
         var dir110 = SeedCache("1.1.0");
@@ -586,6 +641,41 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
         Assert.NotNull(result);
         Assert.Empty(handler.RequestUrls);
+    }
+
+    [Fact]
+    public async Task Fallback_Latest_OnlyPrereleaseCached_UsesItWithExplicitWarning()
+    {
+        var dir = SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.Equal(dir, result);
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
+    }
+
+    [Fact]
+    public async Task Fallback_Latest_StableAndPrereleaseCached_PrefersStable()
+    {
+        var stableDir = SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.Equal(stableDir, result);
+        Assert.DoesNotContain(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
     }
 
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
