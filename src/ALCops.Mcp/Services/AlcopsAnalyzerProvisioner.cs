@@ -130,21 +130,17 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             {
                 _logger.LogInformation(
                     "ALCops analyzers: v{Version} ({Tfm}) from cache {Dir}; checking NuGet in the background",
-                    Path.GetFileName(cached), tfm, cached);
-                _backgroundRefresh = RefreshCacheAsync(tfm, cached, ct);
-                return cached;
+                    cached.Value.Version, tfm, cached.Value.Path);
+                _backgroundRefresh = RefreshCacheAsync(tfm, cached.Value.Path, ct);
+                return cached.Value.Path;
             }
         }
 
         return await FetchOrFallbackAsync(tfm, ct);
     }
 
-    private async Task<string?> FetchAsync(string tfm, CancellationToken ct)
+    private async Task<string?> FetchAsync(string version, string tfm, CancellationToken ct)
     {
-        var version = await ResolveVersionAsync(ct);
-        if (version is null)
-            return null;
-
         _logger.LogInformation("ALCops analyzers: resolved version {Version}", version);
 
         var cacheDir = Path.Combine(_cacheRoot, tfm, version);
@@ -159,17 +155,25 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
 
     private async Task<string?> FetchOrFallbackAsync(string tfm, CancellationToken ct)
     {
+        string? version = null;
         try
         {
-            var result = await FetchAsync(tfm, ct);
-            if (result is not null)
-                return result;
+            version = await ResolveVersionAsync(ct);
+            if (version is not null)
+            {
+                var result = await FetchAsync(version, tfm, ct);
+                if (result is not null)
+                    return result;
+            }
 
             _logger.LogWarning("No suitable ALCops analyzer version found on NuGet");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "ALCops analyzers: NuGet provisioning failed");
+            if (version is not null)
+                _logger.LogWarning(ex, "ALCops analyzers: NuGet provisioning of v{Version} failed", version);
+            else
+                _logger.LogWarning(ex, "ALCops analyzers: NuGet provisioning failed");
         }
 
         return FallbackToCacheOrWarn(tfm);
@@ -179,7 +183,11 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
     {
         try
         {
-            var result = await FetchAsync(tfm, ct);
+            var version = await ResolveVersionAsync(ct);
+            if (version is null)
+                return;
+
+            var result = await FetchAsync(version, tfm, ct);
             if (result is not null && !string.Equals(result, current, StringComparison.OrdinalIgnoreCase))
                 _logger.LogInformation(
                     "ALCops analyzers: fetched v{Version} ({Tfm}); it will be used on next start",
@@ -371,18 +379,17 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         var cached = FindNewestCachedVersion(tfm);
         if (cached is not null)
         {
-            if (_option.Mode == AlcopsAnalyzersMode.Latest
-                && SemanticVersion.TryParse(Path.GetFileName(cached), out var v) && !v.IsStable)
+            if (_option.Mode == AlcopsAnalyzersMode.Latest && !cached.Value.Version.IsStable)
             {
                 _logger.LogWarning(
                     "ALCops analyzers: NuGet unreachable and no stable version cached; using prerelease v{Version} from {Dir} as a last resort",
-                    Path.GetFileName(cached), cached);
+                    cached.Value.Version, cached.Value.Path);
             }
             else
             {
-                _logger.LogWarning("ALCops analyzers: using cached version from {Dir}", cached);
+                _logger.LogWarning("ALCops analyzers: using cached version from {Dir}", cached.Value.Path);
             }
-            return cached;
+            return cached.Value.Path;
         }
 
         _logger.LogWarning(
@@ -393,7 +400,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         return null;
     }
 
-    private string? FindNewestCachedVersion(string tfm, bool includePrerelease = true)
+    private (string Path, SemanticVersion Version)? FindNewestCachedVersion(string tfm, bool includePrerelease = true)
     {
         var tfmDir = Path.Combine(_cacheRoot, tfm);
         if (!Directory.Exists(tfmDir))
@@ -428,7 +435,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             return null;
         }
 
-        return best;
+        return best is not null ? (best, bestVersion!) : null;
     }
 
     // Three-level error isolation so a failure in one TFM folder or one temp
