@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
+using System.Text.Json;
+using ALCops.Mcp;
 using ALCops.Mcp.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -28,6 +32,49 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     private static string NupkgUrl(string v) =>
         $"https://api.nuget.org/v3-flatcontainer/alcops.analyzers/{v}/alcops.analyzers.{v}.nupkg";
 
+    private static void WriteManifest(string dir, string version, IEnumerable<string> files)
+    {
+        var manifest = new
+        {
+            alcopsVersion = version,
+            requestedTfm = Tfm,
+            targetFramework = Tfm,
+            downloadedAt = DateTime.UtcNow.ToString("o"),
+            files = files.Order().ToArray(),
+            source = "test"
+        };
+
+        File.WriteAllText(
+            Path.Combine(dir, ".alcops-manifest.json"),
+            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+    }
+
+    private string SeedCache(string version, params string[] files)
+    {
+        if (files.Length == 0)
+            files = ["ALCops.Fake.dll"];
+
+        var dir = Path.Combine(_cacheRoot, Tfm, version);
+        Directory.CreateDirectory(dir);
+
+        foreach (var file in files)
+            File.WriteAllBytes(Path.Combine(dir, file), [0x4D, 0x5A]);
+
+        WriteManifest(dir, version, files);
+
+        return dir;
+    }
+
+    private string SeedInvalidCache(string version)
+    {
+        var dir = Path.Combine(_cacheRoot, Tfm, version);
+        Directory.CreateDirectory(dir);
+
+        WriteManifest(dir, version, ["ALCops.Fake.dll"]);
+
+        return dir;
+    }
+
     private static byte[] BuildFakeNupkg(params (string tfm, string fileName)[] entries)
     {
         using var ms = new MemoryStream();
@@ -47,6 +94,9 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     private AlcopsAnalyzerProvisioner Create(AlcopsAnalyzersOption option, FakeHandler handler) =>
         new(TestAnalyzers.ToolsLocator, option, handler, _cacheRoot,
             NullLogger<AlcopsAnalyzerProvisioner>.Instance);
+
+    private AlcopsAnalyzerProvisioner Create(AlcopsAnalyzersOption option, FakeHandler handler, ILogger<AlcopsAnalyzerProvisioner> logger) =>
+        new(TestAnalyzers.ToolsLocator, option, handler, _cacheRoot, logger);
 
     [Fact]
     public async Task Provision_ExtractsCorrectTfm_And_WritesManifest()
@@ -156,11 +206,335 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         Assert.Contains(NupkgUrl("1.1.0"), handler.RequestUrls);
     }
 
+    [Fact]
+    public async Task Provision_IndexTimeout_WarmCache_ReturnsCached()
+    {
+        var cached = SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Delays[IndexUrl] = TimeSpan.FromSeconds(5);
+        handler.Respond(IndexUrl, IndexJson);
+
+        var provisioner = new AlcopsAnalyzerProvisioner(
+            TestAnalyzers.ToolsLocator, AlcopsAnalyzersOption.Latest, handler, _cacheRoot,
+            NullLogger<AlcopsAnalyzerProvisioner>.Instance)
+        {
+            ResolveTimeout = TimeSpan.FromMilliseconds(100)
+        };
+
+        var sw = Stopwatch.StartNew();
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+        sw.Stop();
+
+        Assert.Equal(cached, result);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public async Task Provision_DownloadTimeout_WarmCache_ReturnsCached()
+    {
+        var cached = SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Delays[NupkgUrl("1.2.0")] = TimeSpan.FromSeconds(5);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        var provisioner = new AlcopsAnalyzerProvisioner(
+            TestAnalyzers.ToolsLocator, AlcopsAnalyzersOption.Latest, handler, _cacheRoot,
+            NullLogger<AlcopsAnalyzerProvisioner>.Instance)
+        {
+            DownloadTimeout = TimeSpan.FromMilliseconds(100)
+        };
+
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.Equal(cached, result);
+    }
+
+    [Fact]
+    public async Task Provision_HalfExtractedCacheDir_IsReplaced()
+    {
+        SeedInvalidCache("1.2.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(result));
+        Assert.True(File.Exists(Path.Combine(result, "ALCops.Fake.dll")));
+
+        var tfmDir = Path.Combine(_cacheRoot, Tfm);
+        var tmpDirs = Directory.EnumerateDirectories(tfmDir, "*.tmp-*");
+        Assert.Empty(tmpDirs);
+    }
+
+    [Fact]
+    public void ExtractPackage_TargetAlreadyValid_KeepsExistingCopy()
+    {
+        var dir = SeedCache("1.2.0");
+        var dllPath = Path.Combine(dir, "ALCops.Fake.dll");
+        var oldBytes = File.ReadAllBytes(dllPath);
+
+        var nupkgPath = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}.nupkg");
+        try
+        {
+            File.WriteAllBytes(nupkgPath, BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+            var handler = new FakeHandler();
+            var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            var result = provisioner.ExtractPackage(nupkgPath, "1.2.0", Tfm, "test");
+
+            Assert.Equal(dir, result);
+            Assert.Equal(oldBytes, File.ReadAllBytes(dllPath));
+
+            var tfmDir = Path.Combine(_cacheRoot, Tfm);
+            var tmpDirs = Directory.EnumerateDirectories(tfmDir, "*.tmp-*");
+            Assert.Empty(tmpDirs);
+        }
+        finally
+        {
+            try { File.Delete(nupkgPath); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Provision_CallerCancelled_ReadyIsNull_EvenWithCache()
+    {
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await provisioner.ProvisionAsync(cts.Token);
+        var result = await provisioner.Ready;
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task Fallback_PicksNewestCachedPrereleaseNumerically()
+    {
+        SeedCache("1.3.0-preview.9");
+        SeedCache("1.3.0-preview.10");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("preview.10", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Fallback_SkipsInvalidAndTmpDirs()
+    {
+        SeedCache("1.1.0");
+        SeedInvalidCache("1.2.0");
+
+        var tmpDir = Path.Combine(_cacheRoot, Tfm, "1.3.0.tmp-abc");
+        Directory.CreateDirectory(tmpDir);
+        var manifest = new
+        {
+            alcopsVersion = "1.3.0",
+            requestedTfm = Tfm,
+            targetFramework = Tfm,
+            downloadedAt = DateTime.UtcNow.ToString("o"),
+            files = new[] { "ALCops.Fake.dll" },
+            source = "test"
+        };
+        File.WriteAllBytes(Path.Combine(tmpDir, "ALCops.Fake.dll"), [0x4D, 0x5A]);
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".alcops-manifest.json"),
+            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.1.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public void ExtractPackage_TargetInvalidAndUndeletable_ReturnsTempDir()
+    {
+        if (!OperatingSystem.IsWindows() && Environment.IsPrivilegedProcess)
+            return;
+
+        var invalidDir = SeedInvalidCache("1.2.0");
+
+        var nupkgPath = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}.nupkg");
+        try
+        {
+            File.WriteAllBytes(nupkgPath, BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+            using var dirLock = DirectoryLock.Create(invalidDir);
+
+            var logger = new CapturingLogger();
+            var handler = new FakeHandler();
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+            var result = provisioner.ExtractPackage(nupkgPath, "1.2.0", Tfm, "test");
+
+            Assert.NotEqual(invalidDir, result);
+            Assert.StartsWith($"{invalidDir}.tmp-", result);
+            Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(result));
+            Assert.True(File.Exists(Path.Combine(result, "ALCops.Fake.dll")));
+            Assert.Contains(logger.Entries, e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("could not be replaced"));
+
+            var lockFilePath = Path.Combine(result, ".in-use");
+            Assert.True(File.Exists(lockFilePath));
+            Assert.Throws<IOException>(() =>
+                new FileStream(lockFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None).Dispose());
+
+            provisioner.Dispose();
+            using var released = new FileStream(lockFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            try { File.Delete(nupkgPath); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Provision_SweepsStaleTempDirectories_KeepsFreshOnes()
+    {
+        var staleDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-old");
+        Directory.CreateDirectory(staleDir);
+        Directory.SetLastWriteTimeUtc(staleDir, DateTime.UtcNow.AddHours(-2));
+
+        var freshDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-new");
+        Directory.CreateDirectory(freshDir);
+
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.False(Directory.Exists(staleDir));
+        Assert.True(Directory.Exists(freshDir));
+        Assert.NotNull(result);
+        Assert.EndsWith("1.1.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Sweep_SkipsTempDirectoryHeldByAnotherProcess()
+    {
+        var heldDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-held");
+        Directory.CreateDirectory(heldDir);
+        Directory.SetLastWriteTimeUtc(heldDir, DateTime.UtcNow.AddHours(-2));
+
+        FileStream? holdLock = null;
+        try
+        {
+            holdLock = new FileStream(
+                Path.Combine(heldDir, ".in-use"),
+                FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
+
+            SeedCache("1.1.0");
+
+            var handler = new FakeHandler { ThrowOnRequest = true };
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            await provisioner.ProvisionAsync(CancellationToken.None);
+            var result = await provisioner.Ready;
+
+            Assert.True(Directory.Exists(heldDir));
+            Assert.NotNull(result);
+            Assert.EndsWith("1.1.0", Path.GetFileName(result));
+        }
+        finally
+        {
+            holdLock?.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Sweep_CoversEveryTfmFolder()
+    {
+        var otherTfmDir = Path.Combine(_cacheRoot, "net8.0", "1.0.0.tmp-old");
+        Directory.CreateDirectory(otherTfmDir);
+        Directory.SetLastWriteTimeUtc(otherTfmDir, DateTime.UtcNow.AddHours(-2));
+
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(otherTfmDir));
+    }
+
+    private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    private sealed class DirectoryLock : IDisposable
+    {
+        private readonly Action _cleanup;
+
+        private DirectoryLock(Action cleanup) => _cleanup = cleanup;
+
+        public static DirectoryLock Create(string directory)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var lockFile = Path.Combine(directory, "lock.bin");
+                File.WriteAllBytes(lockFile, [0x00]);
+                var stream = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+                return new DirectoryLock(() => stream.Dispose());
+            }
+            else
+            {
+#pragma warning disable CA1416 // guarded by OperatingSystem.IsWindows() above; the analyzer loses the guard through the lambda
+                File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                return new DirectoryLock(() =>
+                    File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute));
+#pragma warning restore CA1416
+            }
+        }
+
+        public void Dispose() => _cleanup();
+    }
+
     internal sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Dictionary<string, Func<HttpResponseMessage>> _responses = new(StringComparer.OrdinalIgnoreCase);
         public List<string> RequestUrls { get; } = [];
         public bool ThrowOnRequest { get; set; }
+        public Dictionary<string, TimeSpan> Delays { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public TaskCompletionSource? Gate { get; set; }
 
         public void Respond(string url, string json)
         {
@@ -178,19 +552,27 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             };
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri!.ToString();
             RequestUrls.Add(url);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (ThrowOnRequest)
                 throw new HttpRequestException("Network unavailable (test)");
 
-            if (_responses.TryGetValue(url, out var factory))
-                return Task.FromResult(factory());
+            if (Gate is not null)
+                await Gate.Task.WaitAsync(cancellationToken);
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            if (Delays.TryGetValue(url, out var delay))
+                await Task.Delay(delay, cancellationToken);
+
+            if (_responses.TryGetValue(url, out var factory))
+                return factory();
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
     }
 }

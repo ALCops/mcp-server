@@ -70,4 +70,56 @@ public class NuGetVersionsTests
         Assert.Null(latest);
         Assert.Null(prerelease);
     }
+
+    [Fact]
+    public void Parse_Prerelease_TwoDigitRevisionBeatsOneDigit()
+    {
+        var json = """{"versions":["1.3.0-preview.9","1.3.0-preview.10"]}""";
+
+        var (_, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.3.0-preview.10", prerelease);
+    }
+
+    [Fact]
+    public void Parse_Prerelease_ListOrderDoesNotMatter()
+    {
+        var json = """{"versions":["1.3.0-preview.10","1.3.0-preview.2"]}""";
+
+        var (_, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.3.0-preview.10", prerelease);
+    }
+
+    [Fact]
+    public void Parse_BuildMetadata_IsIgnoredButRawIsReturned()
+    {
+        var json = """{"versions":["1.0.0+build.1"]}""";
+
+        var (latest, _) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.0.0+build.1", latest);
+    }
+
+    [Fact]
+    public void Parse_Prerelease_StableOutranksItsOwnReleaseCandidate()
+    {
+        var json = """{"versions":["1.0.0-rc.1","1.0.0"]}""";
+
+        var (latest, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.0.0", latest);
+        Assert.Equal("1.0.0", prerelease);
+    }
+
+    [Fact]
+    public void Parse_Prerelease_NewerPrereleaseOutranksOlderStable()
+    {
+        var json = """{"versions":["1.0.0","1.1.0-rc.1"]}""";
+
+        var (latest, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.0.0", latest);
+        Assert.Equal("1.1.0-rc.1", prerelease);
+    }
 }

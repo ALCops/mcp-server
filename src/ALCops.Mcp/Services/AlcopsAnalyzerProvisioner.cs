@@ -25,10 +25,11 @@ internal sealed record AlcopsAnalyzersOption(AlcopsAnalyzersMode Mode, string? P
     }
 }
 
-internal sealed class AlcopsAnalyzerProvisioner
+internal sealed class AlcopsAnalyzerProvisioner : IDisposable
 {
     private const string PackageId = "alcops.analyzers";
     private static readonly Uri IndexUri = new($"https://api.nuget.org/v3-flatcontainer/{PackageId}/index.json");
+    private const string InUseLockFileName = ".in-use";
 
     private readonly BcToolsLocator _toolsLocator;
     private readonly AlcopsAnalyzersOption _option;
@@ -36,8 +37,13 @@ internal sealed class AlcopsAnalyzerProvisioner
     private readonly string _cacheRoot;
     private readonly ILogger<AlcopsAnalyzerProvisioner> _logger;
     private readonly TaskCompletionSource<string?> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private FileStream? _inUseLock;
+
+    internal static readonly TimeSpan StaleTempDirectoryAge = TimeSpan.FromHours(1);
 
     public Task<string?> Ready => _ready.Task;
+    internal TimeSpan ResolveTimeout { get; init; } = TimeSpan.FromSeconds(10);
+    internal TimeSpan DownloadTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
     public AlcopsAnalyzerProvisioner(
         BcToolsLocator toolsLocator,
@@ -54,6 +60,17 @@ internal sealed class AlcopsAnalyzerProvisioner
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".alcops", "analyzers");
         _logger = logger;
     }
+
+    public void Dispose()
+    {
+        _inUseLock?.Dispose();
+        _inUseLock = null;
+        _httpClient.Dispose();
+    }
+
+    private static FileStream AcquireInUseLock(string dir) =>
+        new(Path.Combine(dir, InUseLockFileName), FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
 
     public async Task ProvisionAsync(CancellationToken ct)
     {
@@ -91,6 +108,8 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
 
         _logger.LogInformation("DevTools target framework: {Tfm}", tfm);
+
+        SweepStaleTempDirectories();
 
         string? version;
         try
@@ -135,14 +154,20 @@ internal sealed class AlcopsAnalyzerProvisioner
             return _option.PinnedVersion;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
+        cts.CancelAfter(ResolveTimeout);
+        try
+        {
+            var response = await _httpClient.GetAsync(IndexUri, cts.Token);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync(cts.Token);
 
-        var response = await _httpClient.GetAsync(IndexUri, cts.Token);
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(cts.Token);
-
-        var (latest, prerelease) = NuGetVersions.Parse(json);
-        return _option.Mode == AlcopsAnalyzersMode.Prerelease ? prerelease : latest;
+            var (latest, prerelease) = NuGetVersions.Parse(json);
+            return _option.Mode == AlcopsAnalyzersMode.Prerelease ? prerelease : latest;
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"NuGet index request timed out after {ResolveTimeout.TotalSeconds:0}s", ex);
+        }
     }
 
     private async Task<string> DownloadAndExtractAsync(string version, string tfm, CancellationToken ct)
@@ -151,27 +176,34 @@ internal sealed class AlcopsAnalyzerProvisioner
         _logger.LogInformation("Downloading {Url}", nupkgUrl);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(60));
-
-        using var response = await _httpClient.GetAsync(nupkgUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        response.EnsureSuccessStatusCode();
-
-        var tempFile = Path.Combine(Path.GetTempPath(), $"alcops-{version}-{Guid.NewGuid():N}.nupkg");
+        cts.CancelAfter(DownloadTimeout);
         try
         {
-            await using (var fs = File.Create(tempFile))
-            await using (var content = await response.Content.ReadAsStreamAsync(cts.Token))
-                await content.CopyToAsync(fs, cts.Token);
+            using var response = await _httpClient.GetAsync(nupkgUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            response.EnsureSuccessStatusCode();
 
-            return ExtractPackage(tempFile, version, tfm, nupkgUrl);
+            var tempFile = Path.Combine(Path.GetTempPath(), $"alcops-{version}-{Guid.NewGuid():N}.nupkg");
+            try
+            {
+                await using (var fs = File.Create(tempFile))
+                await using (var content = await response.Content.ReadAsStreamAsync(cts.Token))
+                    await content.CopyToAsync(fs, cts.Token);
+
+                ct.ThrowIfCancellationRequested();
+                return ExtractPackage(tempFile, version, tfm, nupkgUrl);
+            }
+            finally
+            {
+                try { File.Delete(tempFile); } catch { }
+            }
         }
-        finally
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            try { File.Delete(tempFile); } catch { }
+            throw new TimeoutException($"Download of ALCops.Analyzers {version} timed out after {DownloadTimeout.TotalSeconds:0}s", ex);
         }
     }
 
-    private string ExtractPackage(string nupkgPath, string version, string tfm, string sourceUrl)
+    internal string ExtractPackage(string nupkgPath, string version, string tfm, string sourceUrl)
     {
         using var zip = ZipFile.OpenRead(nupkgPath);
 
@@ -195,8 +227,11 @@ internal sealed class AlcopsAnalyzerProvisioner
         var tempDir = $"{targetDir}.tmp-{Guid.NewGuid():N}";
         Directory.CreateDirectory(tempDir);
 
+        FileStream? tempLock = null;
         try
         {
+            tempLock = AcquireInUseLock(tempDir);
+
             var prefix = $"lib/{bestTfm}/";
             var files = new List<string>();
 
@@ -233,13 +268,41 @@ internal sealed class AlcopsAnalyzerProvisioner
 
             Directory.CreateDirectory(Path.GetDirectoryName(targetDir)!);
 
+            if (Directory.Exists(targetDir) && !IsCacheValid(targetDir))
+            {
+                _logger.LogInformation("Replacing incomplete cache directory {Dir}", targetDir);
+                try { Directory.Delete(targetDir, recursive: true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogWarning(ex, "ALCops analyzers: could not delete incomplete cache directory {Dir}", targetDir);
+                }
+            }
+
+            tempLock.Dispose();
+            tempLock = null;
+            try { File.Delete(Path.Combine(tempDir, InUseLockFileName)); } catch { }
+
             try
             {
                 Directory.Move(tempDir, targetDir);
             }
             catch (IOException) when (Directory.Exists(targetDir))
             {
-                try { Directory.Delete(tempDir, recursive: true); } catch { }
+                if (IsCacheValid(targetDir))
+                {
+                    try { Directory.Delete(tempDir, recursive: true); } catch { }
+                    _logger.LogInformation("v{Version} was provisioned concurrently; using {Dir}", version, targetDir);
+                }
+                else
+                {
+                    if (!Directory.Exists(tempDir) || !IsCacheValid(tempDir))
+                        throw new IOException($"ALCops analyzers: {tempDir} disappeared before it could be used");
+                    _inUseLock = AcquireInUseLock(tempDir);
+                    _logger.LogWarning(
+                        "ALCops analyzers: {TargetDir} is incomplete and could not be replaced; using {TempDir} for this session",
+                        targetDir, tempDir);
+                    return tempDir;
+                }
             }
 
             _logger.LogInformation("ALCops analyzers: v{Version} ({Tfm}) provisioned to {Dir}", version, bestTfm, targetDir);
@@ -247,6 +310,7 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
         catch
         {
+            tempLock?.Dispose();
             try { Directory.Delete(tempDir, recursive: true); } catch { }
             throw;
         }
@@ -276,7 +340,7 @@ internal sealed class AlcopsAnalyzerProvisioner
             return null;
 
         string? best = null;
-        Version? bestVersion = null;
+        SemanticVersion? bestVersion = null;
 
         try
         {
@@ -287,13 +351,10 @@ internal sealed class AlcopsAnalyzerProvisioner
                     continue;
                 if (!IsCacheValid(dir))
                     continue;
-
-                var dashIndex = name.IndexOf('-');
-                var basePart = dashIndex >= 0 ? name[..dashIndex] : name;
-                if (!Version.TryParse(basePart, out var v))
+                if (!SemanticVersion.TryParse(name, out var v))
                     continue;
 
-                if (bestVersion is null || v > bestVersion)
+                if (bestVersion is null || v.CompareTo(bestVersion) > 0)
                 {
                     best = dir;
                     bestVersion = v;
@@ -306,6 +367,56 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
 
         return best;
+    }
+
+    private void SweepStaleTempDirectories()
+    {
+        if (!Directory.Exists(_cacheRoot))
+            return;
+
+        var count = 0;
+        try
+        {
+            foreach (var tfmDir in Directory.EnumerateDirectories(_cacheRoot))
+            {
+                try
+                {
+                    foreach (var dir in Directory.EnumerateDirectories(tfmDir, "*.tmp-*"))
+                    {
+                        try
+                        {
+                            if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
+                                continue;
+
+                            try { using var probe = AcquireInUseLock(dir); }
+                            catch (IOException)
+                            {
+                                _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
+                                continue;
+                            }
+
+                            Directory.Delete(dir, recursive: true);
+                            count++;
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogDebug(ex, "ALCops analyzers: could not enumerate extraction directories in {Dir}", tfmDir);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "ALCops analyzers: could not enumerate TFM directories in {Dir}", _cacheRoot);
+        }
+
+        if (count > 0)
+            _logger.LogInformation("ALCops analyzers: removed {Count} stale extraction directories", count);
     }
 
     internal static bool IsCacheValid(string cacheDir)

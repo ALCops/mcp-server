@@ -189,4 +189,14 @@ public class BcToolsLocatorTests : IDisposable
         Assert.False(locator.HasAlMcp);
         Assert.Null(locator.AlMcp);
     }
+
+    [Fact]
+    public void OrderByDescendingVersion_StableThenPrereleaseNumerically_JunkLast()
+    {
+        var input = new[] { "17.0.0", "18.0.0-preview.10", "junk", "18.0.0-preview.9", "18.0.0" };
+
+        var result = BcToolsLocator.OrderByDescendingVersion(input, x => x).ToList();
+
+        Assert.Equal(["18.0.0", "18.0.0-preview.10", "18.0.0-preview.9", "17.0.0", "junk"], result);
+    }
 }
