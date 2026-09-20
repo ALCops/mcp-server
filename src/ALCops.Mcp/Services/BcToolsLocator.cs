@@ -107,6 +107,14 @@ public sealed class BcToolsLocator
     /// </summary>
     public static string ResolveToolsDirectory(string? explicitPath = null)
     {
+        var envPath = Environment.GetEnvironmentVariable("BCDEVELOPMENTTOOLSPATH");
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var toolStoreRoot = string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".dotnet", "tools", ".store", PackageId);
+        return ResolveToolsDirectory(explicitPath, envPath, toolStoreRoot);
+    }
+
+    internal static string ResolveToolsDirectory(string? explicitPath, string? envPath, string? toolStoreRoot)
+    {
         if (explicitPath is not null)
         {
             var resolved = Probe(explicitPath);
@@ -114,25 +122,22 @@ public sealed class BcToolsLocator
                 return Found("--devtools-path", resolved);
 
             throw new InvalidOperationException(
-                $"--devtools-path '{explicitPath}' does not contain {MarkerDll} (checked the directory itself, " +
-                $"<dir>/<tfm>/ and <dir>/tools/<tfm>/any/).");
+                $"--devtools-path: {DescribePath(explicitPath)}");
         }
 
-        var envPath = Environment.GetEnvironmentVariable("BCDEVELOPMENTTOOLSPATH");
         if (!string.IsNullOrEmpty(envPath) && Probe(envPath) is string fromEnv)
             return Found("BCDEVELOPMENTTOOLSPATH", fromEnv);
 
-        if (TryDotnetToolStore() is string fromStore)
+        if (TryDotnetToolStore(toolStoreRoot) is string fromStore)
             return Found("dotnet tool store", fromStore);
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var storeDir = string.IsNullOrEmpty(home) ? "(unknown)" : Path.Combine(home, ".dotnet", "tools", ".store", PackageId);
-        var storeExists = !string.IsNullOrEmpty(home) && Directory.Exists(storeDir);
+        var storeDir = toolStoreRoot ?? "(unknown)";
+        var storeExists = toolStoreRoot is not null && Directory.Exists(toolStoreRoot);
 
         throw new InvalidOperationException(
             "BC Development Tools not found. Probed locations:\n" +
             $"  --devtools-path:        (not supplied)\n" +
-            $"  BCDEVELOPMENTTOOLSPATH:  {DescribeEnvPath(envPath)}\n" +
+            $"  BCDEVELOPMENTTOOLSPATH:  {DescribePath(envPath)}\n" +
             $"  dotnet tool store:      {storeDir} ({(storeExists ? "exists, but no supported version found" : "does not exist")})\n\n" +
             "Install the BC Development Tools with:\n" +
             "  dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools\n\n" +
@@ -141,7 +146,7 @@ public sealed class BcToolsLocator
             "  BCDEVELOPMENTTOOLSPATH=<dir>");
     }
 
-    private static string DescribeEnvPath(string? value)
+    private static string DescribePath(string? value)
     {
         if (string.IsNullOrEmpty(value))
             return "(unset)";
@@ -177,14 +182,9 @@ public sealed class BcToolsLocator
         return null;
     }
 
-    private static string? TryDotnetToolStore()
+    private static string? TryDotnetToolStore(string? storeRoot)
     {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(home))
-            return null;
-
-        var storeRoot = Path.Combine(home, ".dotnet", "tools", ".store", PackageId);
-        if (!Directory.Exists(storeRoot))
+        if (storeRoot is null || !Directory.Exists(storeRoot))
             return null;
 
         // Layout: .store/<pkg>/<ver>/<pkg>/<ver>/tools/<tfm>/any/

@@ -70,6 +70,16 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_ExplicitPathMissingDirectory_ErrorSaysDoesNotExist()
+    {
+        var missing = Path.Combine(_root, "nonexistent-explicit");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(missing, null, null));
+        Assert.Contains("does not exist", ex.Message);
+    }
+
+    [Fact]
     public void Resolve_ExplicitPath_WinsOverEnvironmentVariable()
     {
         var explicitDir = CreateToolsDir("explicit");
@@ -114,16 +124,11 @@ public class BcToolsLocatorTests : IDisposable
     public void Resolve_EnvPointingAtMissingDirectory_ErrorSaysDoesNotExist()
     {
         var missing = Path.Combine(_root, "nonexistent");
-        Environment.SetEnvironmentVariable(EnvVar, missing);
+        var noStore = Path.Combine(_root, "no-store");
 
-        try
-        {
-            BcToolsLocator.ResolveToolsDirectory();
-        }
-        catch (InvalidOperationException ex)
-        {
-            Assert.Contains("does not exist", ex.Message);
-        }
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(null, missing, noStore));
+        Assert.Contains("does not exist", ex.Message);
     }
 
     [Fact]
@@ -131,16 +136,11 @@ public class BcToolsLocatorTests : IDisposable
     {
         var empty = Path.Combine(_root, "emptydir");
         Directory.CreateDirectory(empty);
-        Environment.SetEnvironmentVariable(EnvVar, empty);
+        var noStore = Path.Combine(_root, "no-store");
 
-        try
-        {
-            BcToolsLocator.ResolveToolsDirectory();
-        }
-        catch (InvalidOperationException ex)
-        {
-            Assert.Contains("no Microsoft.Dynamics.Nav.CodeAnalysis.dll in the directory", ex.Message);
-        }
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(null, empty, noStore));
+        Assert.Contains("no Microsoft.Dynamics.Nav.CodeAnalysis.dll in the directory", ex.Message);
     }
 
     [Fact]
