@@ -38,10 +38,18 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
     private readonly ILogger<AlcopsAnalyzerProvisioner> _logger;
     private readonly TaskCompletionSource<string?> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private FileStream? _inUseLock;
+    private Task _backgroundRefresh = Task.CompletedTask;
 
     internal static readonly TimeSpan StaleTempDirectoryAge = TimeSpan.FromHours(1);
 
     public Task<string?> Ready => _ready.Task;
+
+    /// <summary>
+    /// The NuGet check/download that runs after <see cref="Ready"/> completed from cache.
+    /// Never faults; <see cref="Task.CompletedTask"/> on cold-cache, pinned and off paths.
+    /// Awaited by <see cref="ProvisionAsync"/> so shutdown waits for it.
+    /// </summary>
+    internal Task BackgroundRefresh => _backgroundRefresh;
     internal TimeSpan ResolveTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal TimeSpan DownloadTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
@@ -68,6 +76,8 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         _httpClient.Dispose();
     }
 
+    // FileShare.None is a cross-process lock via flock on Unix; reliable on local file systems,
+    // advisory on network mounts such as NFS home directories.
     private static FileStream AcquireInUseLock(string dir) =>
         new(Path.Combine(dir, InUseLockFileName), FileMode.OpenOrCreate,
             FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
@@ -86,6 +96,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         }
 
         _ready.TrySetResult(result);
+        await _backgroundRefresh;
     }
 
     private async Task<string?> ProvisionCoreAsync(CancellationToken ct)
@@ -110,23 +121,29 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         _logger.LogInformation("DevTools target framework: {Tfm}", tfm);
 
         SweepStaleTempDirectories();
+        ct.ThrowIfCancellationRequested();
 
-        string? version;
-        try
+        if (_option.Mode is AlcopsAnalyzersMode.Latest or AlcopsAnalyzersMode.Prerelease)
         {
-            version = await ResolveVersionAsync(ct);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Could not reach NuGet to resolve ALCops analyzer version");
-            return FallbackToCacheOrWarn(tfm);
+            var cached = FindNewestCachedVersion(tfm, includePrerelease: _option.Mode == AlcopsAnalyzersMode.Prerelease);
+            if (cached is not null)
+            {
+                _logger.LogInformation(
+                    "ALCops analyzers: v{Version} ({Tfm}) from cache {Dir}; checking NuGet in the background",
+                    Path.GetFileName(cached), tfm, cached);
+                _backgroundRefresh = RefreshCacheAsync(tfm, cached, ct);
+                return cached;
+            }
         }
 
+        return await FetchOrFallbackAsync(tfm, ct);
+    }
+
+    private async Task<string?> FetchAsync(string tfm, CancellationToken ct)
+    {
+        var version = await ResolveVersionAsync(ct);
         if (version is null)
-        {
-            _logger.LogWarning("No suitable ALCops analyzer version found on NuGet");
-            return FallbackToCacheOrWarn(tfm);
-        }
+            return null;
 
         _logger.LogInformation("ALCops analyzers: resolved version {Version}", version);
 
@@ -137,14 +154,43 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             return cacheDir;
         }
 
+        return await DownloadAndExtractAsync(version, tfm, ct);
+    }
+
+    private async Task<string?> FetchOrFallbackAsync(string tfm, CancellationToken ct)
+    {
         try
         {
-            return await DownloadAndExtractAsync(version, tfm, ct);
+            var result = await FetchAsync(tfm, ct);
+            if (result is not null)
+                return result;
+
+            _logger.LogWarning("No suitable ALCops analyzer version found on NuGet");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to download ALCops.Analyzers {Version}", version);
-            return FallbackToCacheOrWarn(tfm);
+            _logger.LogWarning(ex, "ALCops analyzers: NuGet provisioning failed");
+        }
+
+        return FallbackToCacheOrWarn(tfm);
+    }
+
+    private async Task RefreshCacheAsync(string tfm, string current, CancellationToken ct)
+    {
+        try
+        {
+            var result = await FetchAsync(tfm, ct);
+            if (result is not null && !string.Equals(result, current, StringComparison.OrdinalIgnoreCase))
+                _logger.LogInformation(
+                    "ALCops analyzers: fetched v{Version} ({Tfm}); it will be used on next start",
+                    Path.GetFileName(result), tfm);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "ALCops analyzers: background refresh failed; keeping v{Version}",
+                Path.GetFileName(current));
         }
     }
 
@@ -333,7 +379,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         return null;
     }
 
-    private string? FindNewestCachedVersion(string tfm)
+    private string? FindNewestCachedVersion(string tfm, bool includePrerelease = true)
     {
         var tfmDir = Path.Combine(_cacheRoot, tfm);
         if (!Directory.Exists(tfmDir))
@@ -352,6 +398,8 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
                 if (!IsCacheValid(dir))
                     continue;
                 if (!SemanticVersion.TryParse(name, out var v))
+                    continue;
+                if (!includePrerelease && !v.IsStable)
                     continue;
 
                 if (bestVersion is null || v.CompareTo(bestVersion) > 0)
@@ -375,44 +423,30 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             return;
 
         var count = 0;
-        try
+        foreach (var tfmDir in BcToolsLocator.SafeEnumerateDirectories(_cacheRoot))
         {
-            foreach (var tfmDir in Directory.EnumerateDirectories(_cacheRoot))
+            foreach (var dir in BcToolsLocator.SafeEnumerateDirectories(tfmDir, "*.tmp-*"))
             {
                 try
                 {
-                    foreach (var dir in Directory.EnumerateDirectories(tfmDir, "*.tmp-*"))
+                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
+                        continue;
+
+                    try { using var probe = AcquireInUseLock(dir); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
-                        try
-                        {
-                            if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
-                                continue;
-
-                            try { using var probe = AcquireInUseLock(dir); }
-                            catch (IOException)
-                            {
-                                _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
-                                continue;
-                            }
-
-                            Directory.Delete(dir, recursive: true);
-                            count++;
-                        }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                        {
-                            _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
-                        }
+                        _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
+                        continue;
                     }
+
+                    Directory.Delete(dir, recursive: true);
+                    count++;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    _logger.LogDebug(ex, "ALCops analyzers: could not enumerate extraction directories in {Dir}", tfmDir);
+                    _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
                 }
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _logger.LogDebug(ex, "ALCops analyzers: could not enumerate TFM directories in {Dir}", _cacheRoot);
         }
 
         if (count > 0)

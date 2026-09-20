@@ -118,6 +118,8 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             File.ReadAllText(Path.Combine(result, ".alcops-manifest.json")));
         Assert.Equal("1.2.0", manifest.RootElement.GetProperty("alcopsVersion").GetString());
         Assert.Equal(Tfm, manifest.RootElement.GetProperty("requestedTfm").GetString());
+
+        Assert.True(provisioner.BackgroundRefresh.IsCompleted);
     }
 
     [Fact]
@@ -481,6 +483,109 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         await provisioner.ProvisionAsync(CancellationToken.None);
 
         Assert.False(Directory.Exists(otherTfmDir));
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_ReadyFromCache_RefreshDownloadsNewerForNextStart()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        var run = p.ProvisionAsync(CancellationToken.None);
+
+        Assert.Equal(dir110, await p.Ready.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(p.BackgroundRefresh.IsCompleted);
+
+        handler.Gate.SetResult();
+        await p.BackgroundRefresh;
+
+        Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(Path.Combine(_cacheRoot, Tfm, "1.2.0")));
+        Assert.Equal(dir110, await p.Ready);
+        await run;
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_Latest_UsesNewestCachedStable_NotPrerelease()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.2.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_Prerelease_UsesNewestCachedAny()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Prerelease, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.3.0-preview.1", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_RefreshFailure_NeverThrows()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+
+        Assert.Equal(dir110, await p.Ready);
+        Assert.Contains(IndexUrl, handler.RequestUrls);
+        Assert.True(p.BackgroundRefresh.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_ShutdownCancelsRefresh()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        using var cts = new CancellationTokenSource();
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        var run = p.ProvisionAsync(cts.Token);
+
+        await p.Ready;
+        cts.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(Directory.Exists(Path.Combine(_cacheRoot, Tfm, "1.2.0")));
+    }
+
+    [Fact]
+    public async Task Provision_Pinned_Cached_ZeroRequests()
+    {
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        using var p = Create(AlcopsAnalyzersOption.Parse("1.1.0"), handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.Empty(handler.RequestUrls);
     }
 
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
