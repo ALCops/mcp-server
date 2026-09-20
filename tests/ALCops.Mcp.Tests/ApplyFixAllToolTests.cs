@@ -26,8 +26,7 @@ public class ApplyFixAllToolTests
 
             SessionManager = new ProjectSessionManager(new ProjectLoader());
             CodeFixRunner = new CodeFixRunner();
-            AnalyzerResolver = new ProjectAnalyzerResolver(
-                new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator), new RulesetLoader());
+            AnalyzerResolver = TestAnalyzers.CreateAnalyzerResolver().Resolver;
         }
 
         public string ReadFile(string name) => File.ReadAllText(Path.Combine(ProjectPath, name));

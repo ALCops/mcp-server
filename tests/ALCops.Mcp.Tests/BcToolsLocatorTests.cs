@@ -70,6 +70,16 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_ExplicitPathMissingDirectory_ErrorSaysDoesNotExist()
+    {
+        var missing = Path.Combine(_root, "nonexistent-explicit");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(missing, null, null));
+        Assert.Contains("does not exist", ex.Message);
+    }
+
+    [Fact]
     public void Resolve_ExplicitPath_WinsOverEnvironmentVariable()
     {
         var explicitDir = CreateToolsDir("explicit");
@@ -111,22 +121,39 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_EnvPointingAtMissingDirectory_ErrorSaysDoesNotExist()
+    {
+        var missing = Path.Combine(_root, "nonexistent");
+        var noStore = Path.Combine(_root, "no-store");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(null, missing, noStore));
+        Assert.Contains("does not exist", ex.Message);
+    }
+
+    [Fact]
+    public void Resolve_EnvPointingAtEmptyDirectory_ErrorSaysNoDll()
+    {
+        var empty = Path.Combine(_root, "emptydir");
+        Directory.CreateDirectory(empty);
+        var noStore = Path.Combine(_root, "no-store");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(null, empty, noStore));
+        Assert.Contains("no Microsoft.Dynamics.Nav.CodeAnalysis.dll in the directory", ex.Message);
+    }
+
+    [Fact]
     public void Resolve_NothingInstalled_ErrorNamesEveryProbeAndTheInstallCommand()
     {
-        Environment.SetEnvironmentVariable(EnvVar, null);
+        var noStore = Path.Combine(_root, "no-store");
 
-        try
-        {
-            // On machines with the tool store populated this resolves fine — nothing to assert.
-            BcToolsLocator.ResolveToolsDirectory();
-        }
-        catch (InvalidOperationException ex)
-        {
-            Assert.Contains("--devtools-path", ex.Message);
-            Assert.Contains("BCDEVELOPMENTTOOLSPATH", ex.Message);
-            Assert.Contains("dotnet tool store", ex.Message);
-            Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
-        }
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BcToolsLocator.ResolveToolsDirectory(explicitPath: null, envPath: null, toolStoreRoot: noStore));
+        Assert.Contains("--devtools-path", ex.Message);
+        Assert.Contains("BCDEVELOPMENTTOOLSPATH", ex.Message);
+        Assert.Contains("dotnet tool store", ex.Message);
+        Assert.Contains("dotnet tool install -g Microsoft.Dynamics.BusinessCentral.Development.Tools", ex.Message);
     }
 
     [Fact]

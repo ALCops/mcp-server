@@ -33,15 +33,6 @@ public sealed class AlMcpProxyStartupTests : IDisposable
     private static AlMcpProxyStartup NewStartup(AlMcpProxy proxy) =>
         new(proxy, NullLogger<AlMcpProxyStartup>.Instance);
 
-    private static void TryDelete(string dir)
-    {
-        if (!Directory.Exists(dir))
-            return;
-
-        try { Directory.Delete(dir, recursive: true); }
-        catch (IOException) { /* the child may still hold a handle; the temp dir is disposable */ }
-    }
-
     [AlMcpFact]
     public async Task StartAsync_ReturnsBeforeAlmcpIsReady()
     {
@@ -65,7 +56,7 @@ public sealed class AlMcpProxyStartupTests : IDisposable
         finally
         {
             await startup.StopAsync(Cts.Token);
-            TryDelete(projectDir);
+            TestAnalyzers.TryDeleteDirectory(projectDir);
         }
     }
 
@@ -91,7 +82,7 @@ public sealed class AlMcpProxyStartupTests : IDisposable
         finally
         {
             await startup.StopAsync(Cts.Token);
-            TryDelete(projectDir);
+            TestAnalyzers.TryDeleteDirectory(projectDir);
         }
     }
 
@@ -124,7 +115,7 @@ public sealed class AlMcpProxyStartupTests : IDisposable
         }
         finally
         {
-            TryDelete(projectDir);
+            TestAnalyzers.TryDeleteDirectory(projectDir);
         }
     }
 
@@ -145,9 +136,9 @@ public sealed class AlMcpProxyStartupTests : IDisposable
             var locator = new BcToolsLocator(toolsDir);
             Assert.False(locator.HasAlMcp);
 
-            var loader = new ExternalAnalyzerLoader(locator);
+            var (analyzerResolver, loader) = TestAnalyzers.CreateAnalyzerResolver(locator);
             var resolver = new WorkspaceStartupResolver(
-                new ProjectAnalyzerResolver(loader, new RulesetLoader()),
+                analyzerResolver,
                 loader,
                 NullLogger<WorkspaceStartupResolver>.Instance,
                 []);
@@ -172,7 +163,7 @@ public sealed class AlMcpProxyStartupTests : IDisposable
         }
         finally
         {
-            TryDelete(toolsDir);
+            TestAnalyzers.TryDeleteDirectory(toolsDir);
         }
     }
 
@@ -208,7 +199,7 @@ public sealed class AlMcpProxyStartupTests : IDisposable
         finally
         {
             await startup.StopAsync(Cts.Token);
-            TryDelete(projectDir);
+            TestAnalyzers.TryDeleteDirectory(projectDir);
         }
     }
 

@@ -581,12 +581,18 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         SeedCache("1.3.0-preview.1");
 
         var handler = new FakeHandler { ThrowOnRequest = true };
-        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        var logger = new CapturingLogger();
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler, logger);
         await p.ProvisionAsync(CancellationToken.None);
         var result = await p.Ready;
 
         Assert.NotNull(result);
         Assert.EndsWith("1.2.0", Path.GetFileName(result));
+
+        var info = Assert.Single(logger.Entries, e =>
+            e.Level == LogLevel.Information && e.Message.Contains("from cache"));
+        Assert.Contains("v1.2.0", info.Message);
+        Assert.DoesNotContain("SemanticVersion", info.Message);
     }
 
     [Fact]
@@ -666,8 +672,10 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
         Assert.NotNull(result);
         Assert.Equal(dir, result);
-        Assert.Contains(logger.Entries, e =>
+        var warning = Assert.Single(logger.Entries, e =>
             e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
+        Assert.Contains("v1.3.0-preview.1", warning.Message);
+        Assert.DoesNotContain("SemanticVersion", warning.Message);
     }
 
     // The Latest-mode fast path finds the newest stable version in cache and returns

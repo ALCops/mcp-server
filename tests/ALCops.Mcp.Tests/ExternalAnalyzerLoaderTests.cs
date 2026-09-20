@@ -81,6 +81,24 @@ public class ExternalAnalyzerLoaderTests : IDisposable
     }
 
     [Fact]
+    public void ResolveDllPath_FallsBackToProjectLocalAnalyzersFolder()
+    {
+        var tools = CreateDir("tools-empty");
+        var projectDir = CreateDir("project");
+        var analyzersDir = CreateDir("project", ".vscode", "analyzers");
+
+        CreateStubDll(analyzersDir, "ALCops.LinterCop.dll");
+
+        var locator = new BcToolsLocator(tools);
+        var loader = new ExternalAnalyzerLoader(locator);
+
+        var spec = AnalyzerSpec.Parse("${analyzerFolder}ALCops.LinterCop.dll");
+        var result = loader.ResolveDllPath(spec, projectDir);
+
+        Assert.Equal(Path.Combine(analyzersDir, "ALCops.LinterCop.dll"), result);
+    }
+
+    [Fact]
     public void NullProvisioner_FallsToToolsFolder()
     {
         var tools = CreateDir("tools");

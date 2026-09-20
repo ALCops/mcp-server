@@ -68,7 +68,7 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 
 ### Verifying a fix
 
-After `apply_fix` or `apply_fix_all`, use `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. `al_compile` awaits almcp's internal file watcher, so it picks up the on-disk change reliably. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. Only restarting the server gives a fully fresh almcp workspace.
+After `apply_fix` or `apply_fix_all`, use `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. `al_compile` awaits almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second `al_compile` may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
 
 ## Analyzers
 
