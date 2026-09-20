@@ -44,14 +44,7 @@ public sealed class ExternalAnalyzerLoader
         switch (spec.Kind)
         {
             case AnalyzerSpecKind.WellKnownBcCop:
-            {
-                var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, spec.GetDllFileName());
-                if (File.Exists(candidate))
-                    return candidate;
-
-                var localPath = Path.Combine(projectPath, ".vscode", "analyzers", spec.GetDllFileName());
-                return File.Exists(localPath) ? localPath : null;
-            }
+                return ResolveFromToolsOrProject(spec.GetDllFileName(), projectPath);
 
             case AnalyzerSpecKind.AnalyzerFolderRelative:
             {
@@ -63,12 +56,7 @@ public sealed class ExternalAnalyzerLoader
                         return provCandidate;
                 }
 
-                var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, spec.GetDllFileName());
-                if (File.Exists(candidate))
-                    return candidate;
-
-                var localPath = Path.Combine(projectPath, ".vscode", "analyzers", spec.GetDllFileName());
-                return File.Exists(localPath) ? localPath : null;
+                return ResolveFromToolsOrProject(spec.GetDllFileName(), projectPath);
             }
 
             case AnalyzerSpecKind.DllPath:
@@ -79,6 +67,16 @@ public sealed class ExternalAnalyzerLoader
             default:
                 return null;
         }
+    }
+
+    private string? ResolveFromToolsOrProject(string dllFileName, string projectPath)
+    {
+        var candidate = Path.Combine(_toolsLocator.AnalyzerFolder, dllFileName);
+        if (File.Exists(candidate))
+            return candidate;
+
+        var localPath = Path.Combine(projectPath, ".vscode", "analyzers", dllFileName);
+        return File.Exists(localPath) ? localPath : null;
     }
 
     private LoadedAnalyzerAssembly LoadAssembly(string fullPath, AnalyzerSpec spec)
