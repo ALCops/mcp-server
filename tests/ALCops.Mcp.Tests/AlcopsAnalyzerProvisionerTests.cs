@@ -499,6 +499,14 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         var lockFile = Path.Combine(staleDir, "locked.bin");
         File.WriteAllBytes(lockFile, [0x00]);
 
+        // A second TFM folder with a stale *.tmp-* dir that must be swept even
+        // when another TFM folder's enumeration fails or a directory in the first
+        // folder cannot be deleted. Named so neither alphabetical ordering is
+        // assumed — per-folder isolation makes both orders pass.
+        var sweepableStaleDir = Path.Combine(_cacheRoot, "other-tfm", "1.0.0.tmp-sweepable");
+        Directory.CreateDirectory(sweepableStaleDir);
+        Directory.SetLastWriteTimeUtc(sweepableStaleDir, DateTime.UtcNow.AddHours(-2));
+
         FileStream? holdLock = null;
         string? unreadableDir = null;
         try
@@ -507,9 +515,9 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
             // On Unix (non-root): make a TFM folder unreadable so the lazy enumerator
             // inside SafeEnumerateDirectories throws on the first MoveNext, exercising
-            // the outer try/catch in SweepStaleTempDirectories. On Windows, lazy-
-            // enumeration failures from concurrent deletions cannot be triggered
-            // deterministically; only the delete-failure case is tested there.
+            // the per-TFM-folder catch. On Windows, lazy-enumeration failures from
+            // concurrent deletions cannot be triggered deterministically; only the
+            // delete-failure and cross-folder-continuation cases are tested there.
             if (!OperatingSystem.IsWindows() && !Environment.IsPrivilegedProcess)
             {
                 unreadableDir = Path.Combine(_cacheRoot, "unreadable-tfm");
@@ -527,6 +535,8 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             Assert.NotNull(result);
             Assert.Equal(cached, result);
             Assert.True(Directory.Exists(staleDir), "Locked directory should survive the sweep");
+            Assert.False(Directory.Exists(sweepableStaleDir),
+                "Stale dir in a separate TFM folder must still be swept");
         }
         finally
         {
@@ -660,22 +670,53 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
     }
 
+    // The Latest-mode fast path finds the newest stable version in cache and returns
+    // it immediately — the prerelease is excluded by includePrerelease: false. No NuGet
+    // request is needed for the fast path; no "last resort" warning is logged.
     [Fact]
-    public async Task Fallback_Latest_StableAndPrereleaseCached_PrefersStable()
+    public async Task Provision_Latest_StableAndPrereleaseCached_FastPathUsesStable_NoLastResortWarning()
     {
         var stableDir = SeedCache("1.2.0");
         SeedCache("1.3.0-preview.1");
 
-        var handler = new FakeHandler { ThrowOnRequest = true };
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
         var logger = new CapturingLogger();
         using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
-        await provisioner.ProvisionAsync(CancellationToken.None);
+        var run = provisioner.ProvisionAsync(CancellationToken.None);
         var result = await provisioner.Ready;
 
         Assert.NotNull(result);
         Assert.Equal(stableDir, result);
+        Assert.Empty(handler.RequestUrls);
         Assert.DoesNotContain(logger.Entries, e =>
             e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
+
+        handler.Gate.SetResult();
+        await run;
+    }
+
+    // Documented last-resort behaviour: when the requested pinned version is unavailable
+    // and the nupkg download fails, FallbackToCacheOrWarn picks the highest cached
+    // version with includePrerelease: true. SemVer 2 orders 1.3.0-preview.1 > 1.2.0
+    // (higher base version wins; stability only breaks ties at equal base). This is not
+    // a preference for prereleases — it is the most capable version available offline.
+    [Fact]
+    public async Task Fallback_Prerelease_PicksHighestCachedAcrossStableAndPrerelease()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Parse("9.9.9"), handler, logger);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.3.0-preview.1", Path.GetFileName(result));
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("using cached version"));
     }
 
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
@@ -751,15 +792,19 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri!.ToString();
-            RequestUrls.Add(url);
 
             cancellationToken.ThrowIfCancellationRequested();
 
             if (ThrowOnRequest)
+            {
+                RequestUrls.Add(url);
                 throw new HttpRequestException("Network unavailable (test)");
+            }
 
             if (Gate is not null)
                 await Gate.Task.WaitAsync(cancellationToken);
+
+            RequestUrls.Add(url);
 
             if (Delays.TryGetValue(url, out var delay))
                 await Task.Delay(delay, cancellationToken);

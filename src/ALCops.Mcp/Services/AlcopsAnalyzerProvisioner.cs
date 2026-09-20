@@ -431,7 +431,11 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
         return best;
     }
 
-    // Housekeeping only — must never influence Ready.
+    // Three-level error isolation so a failure in one TFM folder or one temp
+    // directory never aborts the sweep for any other:
+    //   1. Outer (method-level): guards enumeration of the cache root itself.
+    //   2. Per-TFM-folder: guards enumeration of *.tmp-* within each TFM folder.
+    //   3. Per-directory: guards the probe/delete of each individual temp directory.
     private void SweepStaleTempDirectories()
     {
         try
@@ -442,27 +446,34 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             var count = 0;
             foreach (var tfmDir in BcToolsLocator.SafeEnumerateDirectories(_cacheRoot))
             {
-                foreach (var dir in BcToolsLocator.SafeEnumerateDirectories(tfmDir, "*.tmp-*"))
+                try
                 {
-                    try
+                    foreach (var dir in BcToolsLocator.SafeEnumerateDirectories(tfmDir, "*.tmp-*"))
                     {
-                        if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
-                            continue;
+                        try
+                        {
+                            if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
+                                continue;
 
-                        try { using var probe = AcquireInUseLock(dir); }
+                            try { using var probe = AcquireInUseLock(dir); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                            {
+                                _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
+                                continue;
+                            }
+
+                            Directory.Delete(dir, recursive: true);
+                            count++;
+                        }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         {
-                            _logger.LogDebug("ALCops analyzers: skipping in-use extraction directory {Dir}", dir);
-                            continue;
+                            _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
                         }
-
-                        Directory.Delete(dir, recursive: true);
-                        count++;
                     }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
-                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogDebug(ex, "ALCops analyzers: could not enumerate extraction directories in {Dir}", tfmDir);
                 }
             }
 
