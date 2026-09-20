@@ -39,6 +39,13 @@ public class SemanticVersionTests
         Assert.False(v.IsStable);
     }
 
+    [Fact]
+    public void ToString_ReturnsRaw()
+    {
+        Assert.True(SemanticVersion.TryParse("1.3.0-preview.10+sha", out var v));
+        Assert.Equal("1.3.0-preview.10+sha", v.ToString());
+    }
+
     [Theory]
     [InlineData("not-a-version")]
     [InlineData("also broken")]

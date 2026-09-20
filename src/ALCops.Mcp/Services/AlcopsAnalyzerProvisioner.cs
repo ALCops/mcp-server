@@ -130,7 +130,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             {
                 _logger.LogInformation(
                     "ALCops analyzers: v{Version} ({Tfm}) from cache {Dir}; checking NuGet in the background",
-                    cached.Value.Version, tfm, cached.Value.Path);
+                    cached.Value.Version.Raw, tfm, cached.Value.Path);
                 _backgroundRefresh = RefreshCacheAsync(tfm, cached.Value.Path, ct);
                 return cached.Value.Path;
             }
@@ -383,7 +383,7 @@ internal sealed class AlcopsAnalyzerProvisioner : IDisposable
             {
                 _logger.LogWarning(
                     "ALCops analyzers: NuGet unreachable and no stable version cached; using prerelease v{Version} from {Dir} as a last resort",
-                    cached.Value.Version, cached.Value.Path);
+                    cached.Value.Version.Raw, cached.Value.Path);
             }
             else
             {

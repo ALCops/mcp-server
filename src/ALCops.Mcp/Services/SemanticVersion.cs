@@ -116,6 +116,8 @@ internal sealed class SemanticVersion : IComparable<SemanticVersion>
         return aStripped.SequenceCompareTo(bStripped);
     }
 
+    public override string ToString() => Raw;
+
     public static readonly IComparer<SemanticVersion?> Comparer =
         Comparer<SemanticVersion?>.Create((x, y) => x is null ? (y is null ? 0 : -1) : y is null ? 1 : x.CompareTo(y));
 }
