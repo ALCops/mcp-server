@@ -38,6 +38,8 @@ internal sealed class AlcopsAnalyzerProvisioner
     private readonly TaskCompletionSource<string?> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public Task<string?> Ready => _ready.Task;
+    internal TimeSpan ResolveTimeout { get; init; } = TimeSpan.FromSeconds(10);
+    internal TimeSpan DownloadTimeout { get; init; } = TimeSpan.FromSeconds(60);
 
     public AlcopsAnalyzerProvisioner(
         BcToolsLocator toolsLocator,
@@ -135,14 +137,20 @@ internal sealed class AlcopsAnalyzerProvisioner
             return _option.PinnedVersion;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(10));
+        cts.CancelAfter(ResolveTimeout);
+        try
+        {
+            var response = await _httpClient.GetAsync(IndexUri, cts.Token);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync(cts.Token);
 
-        var response = await _httpClient.GetAsync(IndexUri, cts.Token);
-        response.EnsureSuccessStatusCode();
-        var json = await response.Content.ReadAsStringAsync(cts.Token);
-
-        var (latest, prerelease) = NuGetVersions.Parse(json);
-        return _option.Mode == AlcopsAnalyzersMode.Prerelease ? prerelease : latest;
+            var (latest, prerelease) = NuGetVersions.Parse(json);
+            return _option.Mode == AlcopsAnalyzersMode.Prerelease ? prerelease : latest;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"NuGet index request timed out after {ResolveTimeout.TotalSeconds:0}s");
+        }
     }
 
     private async Task<string> DownloadAndExtractAsync(string version, string tfm, CancellationToken ct)
@@ -151,23 +159,30 @@ internal sealed class AlcopsAnalyzerProvisioner
         _logger.LogInformation("Downloading {Url}", nupkgUrl);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(60));
-
-        using var response = await _httpClient.GetAsync(nupkgUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-        response.EnsureSuccessStatusCode();
-
-        var tempFile = Path.Combine(Path.GetTempPath(), $"alcops-{version}-{Guid.NewGuid():N}.nupkg");
+        cts.CancelAfter(DownloadTimeout);
         try
         {
-            await using (var fs = File.Create(tempFile))
-            await using (var content = await response.Content.ReadAsStreamAsync(cts.Token))
-                await content.CopyToAsync(fs, cts.Token);
+            using var response = await _httpClient.GetAsync(nupkgUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            response.EnsureSuccessStatusCode();
 
-            return ExtractPackage(tempFile, version, tfm, nupkgUrl);
+            var tempFile = Path.Combine(Path.GetTempPath(), $"alcops-{version}-{Guid.NewGuid():N}.nupkg");
+            try
+            {
+                await using (var fs = File.Create(tempFile))
+                await using (var content = await response.Content.ReadAsStreamAsync(cts.Token))
+                    await content.CopyToAsync(fs, cts.Token);
+
+                ct.ThrowIfCancellationRequested();
+                return ExtractPackage(tempFile, version, tfm, nupkgUrl);
+            }
+            finally
+            {
+                try { File.Delete(tempFile); } catch { }
+            }
         }
-        finally
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            try { File.Delete(tempFile); } catch { }
+            throw new TimeoutException($"Download of ALCops.Analyzers {version} timed out after {DownloadTimeout.TotalSeconds:0}s");
         }
     }
 

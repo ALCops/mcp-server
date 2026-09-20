@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
+using System.Text.Json;
+using ALCops.Mcp;
 using ALCops.Mcp.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -27,6 +30,56 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
     private static string NupkgUrl(string v) =>
         $"https://api.nuget.org/v3-flatcontainer/alcops.analyzers/{v}/alcops.analyzers.{v}.nupkg";
+
+    private string SeedCache(string version, params string[] files)
+    {
+        if (files.Length == 0)
+            files = ["ALCops.Fake.dll"];
+
+        var dir = Path.Combine(_cacheRoot, Tfm, version);
+        Directory.CreateDirectory(dir);
+
+        foreach (var file in files)
+            File.WriteAllBytes(Path.Combine(dir, file), [0x4D, 0x5A]);
+
+        var manifest = new
+        {
+            alcopsVersion = version,
+            requestedTfm = Tfm,
+            targetFramework = Tfm,
+            downloadedAt = DateTime.UtcNow.ToString("o"),
+            files = files.Order().ToArray(),
+            source = "test"
+        };
+
+        File.WriteAllText(
+            Path.Combine(dir, ".alcops-manifest.json"),
+            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+
+        return dir;
+    }
+
+    private string SeedInvalidCache(string version)
+    {
+        var dir = Path.Combine(_cacheRoot, Tfm, version);
+        Directory.CreateDirectory(dir);
+
+        var manifest = new
+        {
+            alcopsVersion = version,
+            requestedTfm = Tfm,
+            targetFramework = Tfm,
+            downloadedAt = DateTime.UtcNow.ToString("o"),
+            files = new[] { "ALCops.Fake.dll" },
+            source = "test"
+        };
+
+        File.WriteAllText(
+            Path.Combine(dir, ".alcops-manifest.json"),
+            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+
+        return dir;
+    }
 
     private static byte[] BuildFakeNupkg(params (string tfm, string fileName)[] entries)
     {
@@ -156,11 +209,81 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         Assert.Contains(NupkgUrl("1.1.0"), handler.RequestUrls);
     }
 
+    [Fact]
+    public async Task Provision_IndexTimeout_WarmCache_ReturnsCached()
+    {
+        var cached = SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Delays[IndexUrl] = TimeSpan.FromSeconds(5);
+        handler.Respond(IndexUrl, IndexJson);
+
+        var provisioner = new AlcopsAnalyzerProvisioner(
+            TestAnalyzers.ToolsLocator, AlcopsAnalyzersOption.Latest, handler, _cacheRoot,
+            NullLogger<AlcopsAnalyzerProvisioner>.Instance)
+        {
+            ResolveTimeout = TimeSpan.FromMilliseconds(100)
+        };
+
+        var sw = Stopwatch.StartNew();
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+        sw.Stop();
+
+        Assert.Equal(cached, result);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
+    public async Task Provision_DownloadTimeout_WarmCache_ReturnsCached()
+    {
+        var cached = SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Delays[NupkgUrl("1.2.0")] = TimeSpan.FromSeconds(5);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        var provisioner = new AlcopsAnalyzerProvisioner(
+            TestAnalyzers.ToolsLocator, AlcopsAnalyzersOption.Latest, handler, _cacheRoot,
+            NullLogger<AlcopsAnalyzerProvisioner>.Instance)
+        {
+            DownloadTimeout = TimeSpan.FromMilliseconds(100)
+        };
+
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.Equal(cached, result);
+    }
+
+    [Fact]
+    public async Task Provision_CallerCancelled_ReadyIsNull_EvenWithCache()
+    {
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        handler.Respond(IndexUrl, IndexJson);
+
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await provisioner.ProvisionAsync(cts.Token);
+        var result = await provisioner.Ready;
+
+        Assert.Null(result);
+    }
+
     internal sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Dictionary<string, Func<HttpResponseMessage>> _responses = new(StringComparer.OrdinalIgnoreCase);
         public List<string> RequestUrls { get; } = [];
         public bool ThrowOnRequest { get; set; }
+        public Dictionary<string, TimeSpan> Delays { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public TaskCompletionSource? Gate { get; set; }
 
         public void Respond(string url, string json)
         {
@@ -178,19 +301,27 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             };
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri!.ToString();
             RequestUrls.Add(url);
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (ThrowOnRequest)
                 throw new HttpRequestException("Network unavailable (test)");
 
-            if (_responses.TryGetValue(url, out var factory))
-                return Task.FromResult(factory());
+            if (Gate is not null)
+                await Gate.Task.WaitAsync(cancellationToken);
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            if (Delays.TryGetValue(url, out var delay))
+                await Task.Delay(delay, cancellationToken);
+
+            if (_responses.TryGetValue(url, out var factory))
+                return factory();
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
     }
 }
