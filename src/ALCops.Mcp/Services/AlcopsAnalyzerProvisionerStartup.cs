@@ -3,6 +3,11 @@ using Microsoft.Extensions.Logging;
 
 namespace ALCops.Mcp.Services;
 
+/// <summary>
+/// Hosted service that runs <see cref="AlcopsAnalyzerProvisioner.ProvisionAsync"/> on a background task.
+/// <see cref="StopAsync"/> cancels the token and awaits the startup task, which drains both
+/// provisioning and the background NuGet refresh through <see cref="AlcopsAnalyzerProvisioner.ProvisionAsync"/>.
+/// </summary>
 internal sealed class AlcopsAnalyzerProvisionerStartup : IHostedService
 {
     private readonly AlcopsAnalyzerProvisioner _provisioner;

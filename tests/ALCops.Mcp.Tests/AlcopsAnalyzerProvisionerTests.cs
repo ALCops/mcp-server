@@ -118,6 +118,8 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             File.ReadAllText(Path.Combine(result, ".alcops-manifest.json")));
         Assert.Equal("1.2.0", manifest.RootElement.GetProperty("alcopsVersion").GetString());
         Assert.Equal(Tfm, manifest.RootElement.GetProperty("requestedTfm").GetString());
+
+        Assert.True(provisioner.BackgroundRefresh.IsCompleted);
     }
 
     [Fact]
@@ -483,6 +485,240 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         Assert.False(Directory.Exists(otherTfmDir));
     }
 
+    [Fact]
+    public async Task Sweep_EnumerationFailure_DoesNotFailProvisioning()
+    {
+        var cached = SeedCache("1.1.0");
+
+        // A stale *.tmp-* dir with a locked file: the sweep acquires the .in-use
+        // probe successfully but Directory.Delete throws IOException, exercising
+        // the per-directory catch on every platform.
+        var staleDir = Path.Combine(_cacheRoot, Tfm, "1.0.0.tmp-locked");
+        Directory.CreateDirectory(staleDir);
+        Directory.SetLastWriteTimeUtc(staleDir, DateTime.UtcNow.AddHours(-2));
+        var lockFile = Path.Combine(staleDir, "locked.bin");
+        File.WriteAllBytes(lockFile, [0x00]);
+
+        // A second TFM folder with a stale *.tmp-* dir that must be swept even
+        // when another TFM folder's enumeration fails or a directory in the first
+        // folder cannot be deleted. Named so neither alphabetical ordering is
+        // assumed — per-folder isolation makes both orders pass.
+        var sweepableStaleDir = Path.Combine(_cacheRoot, "other-tfm", "1.0.0.tmp-sweepable");
+        Directory.CreateDirectory(sweepableStaleDir);
+        Directory.SetLastWriteTimeUtc(sweepableStaleDir, DateTime.UtcNow.AddHours(-2));
+
+        FileStream? holdLock = null;
+        string? unreadableDir = null;
+        try
+        {
+            holdLock = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            // On Unix (non-root): make a TFM folder unreadable so the lazy enumerator
+            // inside SafeEnumerateDirectories throws on the first MoveNext, exercising
+            // the per-TFM-folder catch. On Windows, lazy-enumeration failures from
+            // concurrent deletions cannot be triggered deterministically; only the
+            // delete-failure and cross-folder-continuation cases are tested there.
+            if (!OperatingSystem.IsWindows() && !Environment.IsPrivilegedProcess)
+            {
+                unreadableDir = Path.Combine(_cacheRoot, "unreadable-tfm");
+                Directory.CreateDirectory(unreadableDir);
+#pragma warning disable CA1416
+                File.SetUnixFileMode(unreadableDir, UnixFileMode.None);
+#pragma warning restore CA1416
+            }
+
+            var handler = new FakeHandler { ThrowOnRequest = true };
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            await provisioner.ProvisionAsync(CancellationToken.None);
+            var result = await provisioner.Ready;
+
+            Assert.NotNull(result);
+            Assert.Equal(cached, result);
+            Assert.True(Directory.Exists(staleDir), "Locked directory should survive the sweep");
+            Assert.False(Directory.Exists(sweepableStaleDir),
+                "Stale dir in a separate TFM folder must still be swept");
+        }
+        finally
+        {
+            holdLock?.Dispose();
+            if (unreadableDir is not null)
+            {
+#pragma warning disable CA1416
+                File.SetUnixFileMode(unreadableDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+#pragma warning restore CA1416
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_ReadyFromCache_RefreshDownloadsNewerForNextStart()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        var run = p.ProvisionAsync(CancellationToken.None);
+
+        Assert.Equal(dir110, await p.Ready.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.False(p.BackgroundRefresh.IsCompleted);
+
+        handler.Gate.SetResult();
+        await p.BackgroundRefresh;
+
+        Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(Path.Combine(_cacheRoot, Tfm, "1.2.0")));
+        Assert.Equal(dir110, await p.Ready);
+        await run;
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_Latest_UsesNewestCachedStable_NotPrerelease()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.2.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_Prerelease_UsesNewestCachedAny()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Prerelease, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.3.0-preview.1", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_RefreshFailure_NeverThrows()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        await p.ProvisionAsync(CancellationToken.None);
+
+        Assert.Equal(dir110, await p.Ready);
+        Assert.Contains(IndexUrl, handler.RequestUrls);
+        Assert.True(p.BackgroundRefresh.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Provision_WarmCache_ShutdownCancelsRefresh()
+    {
+        var dir110 = SeedCache("1.1.0");
+
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
+        handler.Respond(NupkgUrl("1.2.0"),
+            BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+
+        using var cts = new CancellationTokenSource();
+        using var p = Create(AlcopsAnalyzersOption.Latest, handler);
+        var run = p.ProvisionAsync(cts.Token);
+
+        await p.Ready;
+        cts.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(Directory.Exists(Path.Combine(_cacheRoot, Tfm, "1.2.0")));
+    }
+
+    [Fact]
+    public async Task Provision_Pinned_Cached_ZeroRequests()
+    {
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler();
+        using var p = Create(AlcopsAnalyzersOption.Parse("1.1.0"), handler);
+        await p.ProvisionAsync(CancellationToken.None);
+        var result = await p.Ready;
+
+        Assert.NotNull(result);
+        Assert.Empty(handler.RequestUrls);
+    }
+
+    [Fact]
+    public async Task Fallback_Latest_OnlyPrereleaseCached_UsesItWithExplicitWarning()
+    {
+        var dir = SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.Equal(dir, result);
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
+    }
+
+    // The Latest-mode fast path finds the newest stable version in cache and returns
+    // it immediately — the prerelease is excluded by includePrerelease: false. No NuGet
+    // request is needed for the fast path; no "last resort" warning is logged.
+    [Fact]
+    public async Task Provision_Latest_StableAndPrereleaseCached_FastPathUsesStable_NoLastResortWarning()
+    {
+        var stableDir = SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { Gate = new TaskCompletionSource() };
+        handler.Respond(IndexUrl, IndexJson);
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+        var run = provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.Equal(stableDir, result);
+        Assert.Empty(handler.RequestUrls);
+        Assert.DoesNotContain(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("no stable version cached"));
+
+        handler.Gate.SetResult();
+        await run;
+    }
+
+    // Documented last-resort behaviour: when the requested pinned version is unavailable
+    // and the nupkg download fails, FallbackToCacheOrWarn picks the highest cached
+    // version with includePrerelease: true. SemVer 2 orders 1.3.0-preview.1 > 1.2.0
+    // (higher base version wins; stability only breaks ties at equal base). This is not
+    // a preference for prereleases — it is the most capable version available offline.
+    [Fact]
+    public async Task Fallback_Prerelease_PicksHighestCachedAcrossStableAndPrerelease()
+    {
+        SeedCache("1.2.0");
+        SeedCache("1.3.0-preview.1");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var logger = new CapturingLogger();
+        using var provisioner = Create(AlcopsAnalyzersOption.Parse("9.9.9"), handler, logger);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.3.0-preview.1", Path.GetFileName(result));
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("using cached version"));
+    }
+
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = [];
@@ -556,15 +792,19 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri!.ToString();
-            RequestUrls.Add(url);
 
             cancellationToken.ThrowIfCancellationRequested();
 
             if (ThrowOnRequest)
+            {
+                RequestUrls.Add(url);
                 throw new HttpRequestException("Network unavailable (test)");
+            }
 
             if (Gate is not null)
                 await Gate.Task.WaitAsync(cancellationToken);
+
+            RequestUrls.Add(url);
 
             if (Delays.TryGetValue(url, out var delay))
                 await Task.Delay(delay, cancellationToken);

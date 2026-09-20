@@ -53,8 +53,9 @@ internal static class McpHost
                 sp.GetRequiredService<RulesetLoader>(),
                 sp.GetRequiredService<AlcopsAnalyzerProvisioner>()));
 
-        // ALCops analyzer provisioner: downloads ALCops' own analyzers from NuGet, matched to the
-        // installed DevTools TFM. Runs under --no-proxy too — the native fix tools need them.
+        // ALCops analyzer provisioner: uses the newest cached ALCops analyzers immediately and
+        // refreshes from NuGet in the background, matched to the installed DevTools TFM.
+        // Runs under --no-proxy too — the native fix tools need them.
         var analyzersOption = AlcopsAnalyzersOption.Parse(
             proxyOptions.AlcopsAnalyzers
             ?? Environment.GetEnvironmentVariable("ALCOPS_ANALYZERS"));

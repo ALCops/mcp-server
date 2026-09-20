@@ -203,7 +203,7 @@ public sealed class BcToolsLocator
             .OrderByDescending(x => x.Version, SemanticVersion.Comparer)
             .Select(x => x.Path);
 
-    private static IEnumerable<string> SafeEnumerateDirectories(string root, string pattern)
+    internal static IEnumerable<string> SafeEnumerateDirectories(string root, string pattern = "*")
     {
         try
         {

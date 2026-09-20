@@ -221,6 +221,29 @@ public class WorkspaceStartupResolverTests : IDisposable
         Assert.DoesNotContain("--packagecachepath", args);
     }
 
+    [Fact]
+    public async Task GetConfigAsync_IsMemoized()
+    {
+        var project = CreateProject("App");
+        Directory.CreateDirectory(Path.Combine(project, ".vscode"));
+        File.WriteAllText(
+            Path.Combine(project, ".vscode", "settings.json"),
+            """{ "al.packageCachePath": "../a" }""");
+
+        var resolver = CreateResolver(project);
+        var args1 = resolver.BuildAlMcpArgs([]);
+
+        File.WriteAllText(
+            Path.Combine(project, ".vscode", "settings.json"),
+            """{ "al.packageCachePath": "../b" }""");
+
+        var args2 = resolver.BuildAlMcpArgs([]);
+        Assert.Equal("../a", ValueOf(args1, "--packagecachepath"));
+        Assert.Equal("../a", ValueOf(args2, "--packagecachepath"));
+
+        Assert.Same(await resolver.GetConfigAsync(), await resolver.GetConfigAsync());
+    }
+
     private static string? ValueOf(string[] args, string flag)
     {
         var index = Array.IndexOf(args, flag);

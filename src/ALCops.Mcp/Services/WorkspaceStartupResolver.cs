@@ -42,6 +42,7 @@ public sealed class WorkspaceStartupResolver
     private readonly ILogger<WorkspaceStartupResolver> _logger;
     private readonly string[]? _explicitProjects;
     private readonly Lazy<WorkspaceStartupConfig> _projectConfig;
+    private readonly Lazy<Task<WorkspaceStartupConfig>> _fullConfig;
 
     public WorkspaceStartupResolver(
         ProjectAnalyzerResolver analyzerResolver,
@@ -63,6 +64,7 @@ public sealed class WorkspaceStartupResolver
         _logger = logger;
         _explicitProjects = explicitProjects;
         _projectConfig = new Lazy<WorkspaceStartupConfig>(DiscoverProjectsOnly);
+        _fullConfig = new Lazy<Task<WorkspaceStartupConfig>>(ResolveFullConfigAsync, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>
@@ -73,26 +75,22 @@ public sealed class WorkspaceStartupResolver
 
     /// <summary>
     /// Async: awaits the provisioner (if present) then resolves the full config including analyzers,
-    /// rulesets, and package cache paths.
+    /// rulesets, and package cache paths. The result is memoized.
     /// </summary>
-    public async Task<WorkspaceStartupConfig> GetConfigAsync()
-    {
-        if (_provisioner is not null)
-        {
-            var folder = await _provisioner.Ready;
-            if (folder is not null)
-                _logger.LogInformation("ALCops analyzers provisioned at {Folder}", folder);
-        }
-
-        return ResolveFullConfig();
-    }
+    public Task<WorkspaceStartupConfig> GetConfigAsync() => _fullConfig.Value;
 
     /// <summary>
     /// Composes the child <c>almcp</c> argument list, merged with any passthrough args the user gave
     /// us. User-supplied flags always win — we only fill in what they left unset.
+    /// Requires the full config to have resolved; throws if the provisioner is still running.
     /// </summary>
-    public string[] BuildAlMcpArgs(IReadOnlyList<string> userArgs) =>
-        ComposeAlMcpArgs(ResolveFullConfig(), userArgs);
+    public string[] BuildAlMcpArgs(IReadOnlyList<string> userArgs)
+    {
+        var task = _fullConfig.Value;
+        if (!task.IsCompleted)
+            throw new InvalidOperationException("Analyzer provisioning is still running; use BuildAlMcpArgsAsync.");
+        return ComposeAlMcpArgs(task.GetAwaiter().GetResult(), userArgs);
+    }
 
     /// <summary>Async variant that awaits the provisioner before resolving the full config.</summary>
     public async Task<string[]> BuildAlMcpArgsAsync(IReadOnlyList<string> userArgs) =>
@@ -156,6 +154,18 @@ public sealed class WorkspaceStartupResolver
         }
 
         return new WorkspaceStartupConfig(projects, [], null);
+    }
+
+    private async Task<WorkspaceStartupConfig> ResolveFullConfigAsync()
+    {
+        if (_provisioner is not null)
+        {
+            var folder = await _provisioner.Ready;
+            if (folder is not null)
+                _logger.LogInformation("ALCops analyzers provisioned at {Folder}", folder);
+        }
+
+        return ResolveFullConfig();
     }
 
     private WorkspaceStartupConfig ResolveFullConfig()
