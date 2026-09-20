@@ -78,20 +78,20 @@ This is deliberate: bundling pinned cop DLLs beside whatever `Nav.CodeAnalysis` 
 
 ### ALCops analyzer provisioning
 
-ALCops' own analyzers (`${analyzerFolder}ALCops.*.dll`) are provisioned automatically at every startup. The server detects the installed DevTools' target framework (e.g. `net10.0`), downloads the latest stable [ALCops.Analyzers](https://www.nuget.org/packages/ALCops.Analyzers) NuGet package, extracts the matching `lib/<tfm>/` folder, and caches the DLLs under `~/.alcops/analyzers/<tfm>/<version>/`. On subsequent starts a newer stable version is picked up automatically; older cached versions are left in place.
+ALCops' own analyzers (`${analyzerFolder}ALCops.*.dll`) are provisioned automatically at every startup. The server detects the installed DevTools' target framework (e.g. `net10.0`), and on the first start downloads the latest stable [ALCops.Analyzers](https://www.nuget.org/packages/ALCops.Analyzers) NuGet package, extracts the matching `lib/<tfm>/` folder, and caches the DLLs under `~/.alcops/analyzers/<tfm>/<version>/`. On later starts the newest cached version is used immediately so `almcp` launches without waiting on NuGet; a NuGet check and any download run in the background and a newer version is used on the **next** start. Older cached versions are left in place.
 
 Configure with `--alcops-analyzers` or the `ALCOPS_ANALYZERS` environment variable:
 
 | Value | Behaviour |
 |-------|-----------|
-| `latest` (default) | Download the latest stable release. |
-| `prerelease` | Download the highest version including prereleases. |
+| `latest` (default) | Newest cached stable release; a newer one is fetched in the background for the next start (the first run downloads before starting). |
+| `prerelease` | Highest version including prereleases from cache; a newer one is fetched in the background for the next start (the first run downloads before starting). |
 | `<version>` (e.g. `1.2.0`) | Pin to a specific version (no index lookup). |
 | `off` | Disable provisioning entirely. |
 
 Set `ALCOPS_ANALYZERS_CACHE` to override the default cache directory (`~/.alcops/analyzers`).
 
-When offline, the newest previously cached version for the target TFM is used with a warning. When no cache exists, the server starts without ALCops analyzers and logs a message with manual provisioning instructions.
+When NuGet is unreachable or slow, the newest previously cached version for the target TFM is used with a warning. When no cache exists, the server starts without ALCops analyzers and logs a message with manual provisioning instructions.
 
 The recommended `al.codeAnalyzers` configuration:
 
