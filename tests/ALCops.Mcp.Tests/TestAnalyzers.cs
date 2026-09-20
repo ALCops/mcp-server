@@ -58,6 +58,21 @@ internal static class TestAnalyzers
         return destination;
     }
 
+    internal static (ProjectAnalyzerResolver Resolver, ExternalAnalyzerLoader Loader) CreateAnalyzerResolver(BcToolsLocator? locator = null)
+    {
+        var loader = new ExternalAnalyzerLoader(locator ?? ToolsLocator);
+        return (new ProjectAnalyzerResolver(loader, new RulesetLoader()), loader);
+    }
+
+    internal static void TryDeleteDirectory(string dir)
+    {
+        if (!Directory.Exists(dir))
+            return;
+
+        try { Directory.Delete(dir, recursive: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
     public static void WriteAnalyzerSettings(string projectPath)
     {
         Assert.NotEmpty(CopDllPaths);

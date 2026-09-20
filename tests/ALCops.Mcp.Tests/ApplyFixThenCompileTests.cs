@@ -49,8 +49,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         // 2. Apply the fix (same path as ApplyFixToolTests.ApplyFix_WritesModifiedContentToDisk)
         using var sessionManager = new ProjectSessionManager(new ProjectLoader());
         var codeFixRunner = new CodeFixRunner();
-        var loader = new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator);
-        var analyzerResolver = new ProjectAnalyzerResolver(loader, new RulesetLoader());
+        var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
 
         var session = await sessionManager.GetOrLoadProjectAsync(projectDir, Cts.Token);
         var analyzerSet = await analyzerResolver.ResolveAsync(projectDir, null, Cts.Token);
@@ -111,11 +110,7 @@ public sealed class ApplyFixAlMcpFixture : IAsyncLifetime
         if (Proxy is not null)
             await Proxy.DisposeAsync();
 
-        if (Directory.Exists(ProjectDir))
-        {
-            try { Directory.Delete(ProjectDir, recursive: true); }
-            catch (IOException) { }
-        }
+        TestAnalyzers.TryDeleteDirectory(ProjectDir);
     }
 }
 

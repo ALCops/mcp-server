@@ -11,12 +11,6 @@ namespace ALCops.Mcp.Tests;
 /// </summary>
 public class ApplyFixToolTests
 {
-    private static (ProjectAnalyzerResolver Resolver, ExternalAnalyzerLoader Loader) CreateAnalyzerResolver()
-    {
-        var loader = new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator);
-        return (new ProjectAnalyzerResolver(loader, new RulesetLoader()), loader);
-    }
-
     [Fact]
     public async Task ApplyFix_WritesModifiedContentToDisk()
     {
@@ -31,7 +25,7 @@ public class ApplyFixToolTests
 
             using var sessionManager = new ProjectSessionManager(new ProjectLoader());
             var codeFixRunner = new CodeFixRunner();
-            var (analyzerResolver, _) = CreateAnalyzerResolver();
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
 
             var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
@@ -79,7 +73,7 @@ public class ApplyFixToolTests
 
             using var sessionManager = new ProjectSessionManager(new ProjectLoader());
             var codeFixRunner = new CodeFixRunner();
-            var (analyzerResolver, loader) = CreateAnalyzerResolver();
+            var (analyzerResolver, loader) = TestAnalyzers.CreateAnalyzerResolver();
 
             var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
 

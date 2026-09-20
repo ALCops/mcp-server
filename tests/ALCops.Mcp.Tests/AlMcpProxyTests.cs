@@ -180,9 +180,9 @@ public sealed class AlMcpFixture : IAsyncLifetime
     {
         projectDir = TestAnalyzers.CopyFixtureWithAnalyzers(fixtureName, "alcops-proxy-test");
 
-        var loader = new ExternalAnalyzerLoader(Locator!);
+        var (analyzerResolver, loader) = TestAnalyzers.CreateAnalyzerResolver(Locator!);
         var resolver = new WorkspaceStartupResolver(
-            new ProjectAnalyzerResolver(loader, new RulesetLoader()),
+            analyzerResolver,
             loader,
             NullLogger<WorkspaceStartupResolver>.Instance,
             [projectDir]);
@@ -213,11 +213,7 @@ public sealed class AlMcpFixture : IAsyncLifetime
         if (Proxy is not null)
             await Proxy.DisposeAsync();
 
-        if (Directory.Exists(ProjectDir))
-        {
-            try { Directory.Delete(ProjectDir, recursive: true); }
-            catch (IOException) { /* the child may still hold a handle; the temp dir is disposable */ }
-        }
+        TestAnalyzers.TryDeleteDirectory(ProjectDir);
     }
 }
 

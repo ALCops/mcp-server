@@ -21,9 +21,9 @@ public class WorkspaceStartupResolverTests : IDisposable
 
     private WorkspaceStartupResolver CreateResolver(params string[] projects)
     {
-        var loader = new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator);
+        var (analyzerResolver, loader) = TestAnalyzers.CreateAnalyzerResolver();
         return new WorkspaceStartupResolver(
-            new ProjectAnalyzerResolver(loader, new RulesetLoader()),
+            analyzerResolver,
             loader,
             NullLogger<WorkspaceStartupResolver>.Instance,
             projects.Length > 0 ? projects : null);
