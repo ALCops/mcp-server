@@ -329,6 +329,52 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task Fallback_PicksNewestCachedPrereleaseNumerically()
+    {
+        SeedCache("1.3.0-preview.9");
+        SeedCache("1.3.0-preview.10");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("preview.10", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Fallback_SkipsInvalidAndTmpDirs()
+    {
+        SeedCache("1.1.0");
+        SeedInvalidCache("1.2.0");
+
+        var tmpDir = Path.Combine(_cacheRoot, Tfm, "1.3.0.tmp-abc");
+        Directory.CreateDirectory(tmpDir);
+        var manifest = new
+        {
+            alcopsVersion = "1.3.0",
+            requestedTfm = Tfm,
+            targetFramework = Tfm,
+            downloadedAt = DateTime.UtcNow.ToString("o"),
+            files = new[] { "ALCops.Fake.dll" },
+            source = "test"
+        };
+        File.WriteAllBytes(Path.Combine(tmpDir, "ALCops.Fake.dll"), [0x4D, 0x5A]);
+        File.WriteAllText(
+            Path.Combine(tmpDir, ".alcops-manifest.json"),
+            System.Text.Json.JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.NotNull(result);
+        Assert.EndsWith("1.1.0", Path.GetFileName(result));
+    }
+
     internal sealed class FakeHandler : HttpMessageHandler
     {
         private readonly Dictionary<string, Func<HttpResponseMessage>> _responses = new(StringComparer.OrdinalIgnoreCase);

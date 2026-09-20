@@ -194,22 +194,13 @@ public sealed class BcToolsLocator
         => OrderByDescendingVersion(SafeEnumerateDirectories(root, "*"), versionOf);
 
     /// <summary>
-    /// Highest version wins; a stable release outranks a prerelease of the same base version.
-    /// Unparseable names sort last rather than being dropped.
+    /// Highest version wins using full SemVer 2 ordering (prerelease identifiers compared
+    /// numerically where possible). Unparseable names sort last rather than being dropped.
     /// </summary>
-    private static IEnumerable<string> OrderByDescendingVersion(IEnumerable<string> paths, Func<string, string> versionOf)
+    internal static IEnumerable<string> OrderByDescendingVersion(IEnumerable<string> paths, Func<string, string> versionOf)
         => paths
-            .Select(p =>
-            {
-                var raw = versionOf(p);
-                var dashIndex = raw.IndexOf('-');
-                var isStable = dashIndex < 0;
-                var baseVersion = isStable ? raw : raw[..dashIndex];
-                return (Path: p, Version: Version.TryParse(baseVersion, out var v) ? v : null, IsStable: isStable);
-            })
-            .OrderByDescending(x => x.Version is not null)
-            .ThenByDescending(x => x.Version)
-            .ThenByDescending(x => x.IsStable)
+            .Select(p => (Path: p, Version: SemanticVersion.TryParse(versionOf(p), out var v) ? v : null))
+            .OrderByDescending(x => x.Version, SemanticVersion.Comparer)
             .Select(x => x.Path);
 
     private static IEnumerable<string> SafeEnumerateDirectories(string root, string pattern)

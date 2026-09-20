@@ -301,7 +301,7 @@ internal sealed class AlcopsAnalyzerProvisioner
             return null;
 
         string? best = null;
-        Version? bestVersion = null;
+        SemanticVersion? bestVersion = null;
 
         try
         {
@@ -312,13 +312,10 @@ internal sealed class AlcopsAnalyzerProvisioner
                     continue;
                 if (!IsCacheValid(dir))
                     continue;
-
-                var dashIndex = name.IndexOf('-');
-                var basePart = dashIndex >= 0 ? name[..dashIndex] : name;
-                if (!Version.TryParse(basePart, out var v))
+                if (!SemanticVersion.TryParse(name, out var v))
                     continue;
 
-                if (bestVersion is null || v > bestVersion)
+                if (bestVersion is null || v.CompareTo(bestVersion) > 0)
                 {
                     best = dir;
                     bestVersion = v;
