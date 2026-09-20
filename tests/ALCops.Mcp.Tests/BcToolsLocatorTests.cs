@@ -111,6 +111,39 @@ public class BcToolsLocatorTests : IDisposable
     }
 
     [Fact]
+    public void Resolve_EnvPointingAtMissingDirectory_ErrorSaysDoesNotExist()
+    {
+        var missing = Path.Combine(_root, "nonexistent");
+        Environment.SetEnvironmentVariable(EnvVar, missing);
+
+        try
+        {
+            BcToolsLocator.ResolveToolsDirectory();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Assert.Contains("does not exist", ex.Message);
+        }
+    }
+
+    [Fact]
+    public void Resolve_EnvPointingAtEmptyDirectory_ErrorSaysNoDll()
+    {
+        var empty = Path.Combine(_root, "emptydir");
+        Directory.CreateDirectory(empty);
+        Environment.SetEnvironmentVariable(EnvVar, empty);
+
+        try
+        {
+            BcToolsLocator.ResolveToolsDirectory();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Assert.Contains("no Microsoft.Dynamics.Nav.CodeAnalysis.dll in the directory", ex.Message);
+        }
+    }
+
+    [Fact]
     public void Resolve_NothingInstalled_ErrorNamesEveryProbeAndTheInstallCommand()
     {
         Environment.SetEnvironmentVariable(EnvVar, null);
