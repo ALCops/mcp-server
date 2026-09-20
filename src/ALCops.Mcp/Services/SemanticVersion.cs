@@ -116,16 +116,6 @@ internal sealed class SemanticVersion : IComparable<SemanticVersion>
         return aStripped.SequenceCompareTo(bStripped);
     }
 
-    public static IComparer<SemanticVersion?> Comparer { get; } = new NullSafeComparer();
-
-    private sealed class NullSafeComparer : IComparer<SemanticVersion?>
-    {
-        public int Compare(SemanticVersion? x, SemanticVersion? y)
-        {
-            if (x is null && y is null) return 0;
-            if (x is null) return -1;
-            if (y is null) return 1;
-            return x.CompareTo(y);
-        }
-    }
+    public static readonly IComparer<SemanticVersion?> Comparer =
+        Comparer<SemanticVersion?>.Create((x, y) => x is null ? (y is null ? 0 : -1) : y is null ? 1 : x.CompareTo(y));
 }

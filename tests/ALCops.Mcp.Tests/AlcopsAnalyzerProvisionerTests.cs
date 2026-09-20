@@ -375,19 +375,17 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     [Fact]
     public void ExtractPackage_TargetInvalidAndUndeletable_ReturnsTempDir()
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && Environment.UserName == "root")
             return;
 
         var invalidDir = SeedInvalidCache("1.2.0");
-        var lockFile = Path.Combine(invalidDir, "lock.bin");
-        File.WriteAllBytes(lockFile, [0x00]);
 
         var nupkgPath = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}.nupkg");
-        FileStream? lockStream = null;
         try
         {
             File.WriteAllBytes(nupkgPath, BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
-            lockStream = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            using var dirLock = DirectoryLock.Create(invalidDir);
 
             var logger = new CapturingLogger();
             var handler = new FakeHandler();
@@ -403,9 +401,31 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         }
         finally
         {
-            lockStream?.Dispose();
             try { File.Delete(nupkgPath); } catch { }
         }
+    }
+
+    [Fact]
+    public async Task Provision_SweepsStaleTempDirectories_KeepsFreshOnes()
+    {
+        var staleDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-old");
+        Directory.CreateDirectory(staleDir);
+        Directory.SetLastWriteTimeUtc(staleDir, DateTime.UtcNow.AddHours(-2));
+
+        var freshDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-new");
+        Directory.CreateDirectory(freshDir);
+
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+        var result = await provisioner.Ready;
+
+        Assert.False(Directory.Exists(staleDir));
+        Assert.True(Directory.Exists(freshDir));
+        Assert.NotNull(result);
+        Assert.EndsWith("1.1.0", Path.GetFileName(result));
     }
 
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
@@ -423,6 +443,34 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             Exception? exception,
             Func<TState, Exception?, string> formatter) =>
             Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    private sealed class DirectoryLock : IDisposable
+    {
+        private readonly Action _cleanup;
+
+        private DirectoryLock(Action cleanup) => _cleanup = cleanup;
+
+        public static DirectoryLock Create(string directory)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var lockFile = Path.Combine(directory, "lock.bin");
+                File.WriteAllBytes(lockFile, [0x00]);
+                var stream = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+                return new DirectoryLock(() => stream.Dispose());
+            }
+            else
+            {
+#pragma warning disable CA1416 // guarded by OperatingSystem.IsWindows() above; the analyzer loses the guard through the lambda
+                File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                return new DirectoryLock(() =>
+                    File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute));
+#pragma warning restore CA1416
+            }
+        }
+
+        public void Dispose() => _cleanup();
     }
 
     internal sealed class FakeHandler : HttpMessageHandler

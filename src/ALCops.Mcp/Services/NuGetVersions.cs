@@ -15,7 +15,8 @@ internal static class NuGetVersions
             return (null, null);
 
         SemanticVersion? latest = null;
-        SemanticVersion? prerelease = null;
+        // `newest` is the highest version overall, stable or not; a stable release outranks its own prereleases, so `--alcops-analyzers prerelease` never picks an rc that already shipped as stable.
+        SemanticVersion? newest = null;
 
         foreach (var element in versions.EnumerateArray())
         {
@@ -26,10 +27,10 @@ internal static class NuGetVersions
             if (v.IsStable && (latest is null || v.CompareTo(latest) > 0))
                 latest = v;
 
-            if (prerelease is null || v.CompareTo(prerelease) > 0)
-                prerelease = v;
+            if (newest is null || v.CompareTo(newest) > 0)
+                newest = v;
         }
 
-        return (latest?.Raw, prerelease?.Raw);
+        return (latest?.Raw, newest?.Raw);
     }
 }

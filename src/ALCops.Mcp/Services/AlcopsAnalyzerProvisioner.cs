@@ -37,6 +37,8 @@ internal sealed class AlcopsAnalyzerProvisioner
     private readonly ILogger<AlcopsAnalyzerProvisioner> _logger;
     private readonly TaskCompletionSource<string?> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    internal static readonly TimeSpan StaleTempDirectoryAge = TimeSpan.FromHours(1);
+
     public Task<string?> Ready => _ready.Task;
     internal TimeSpan ResolveTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal TimeSpan DownloadTimeout { get; init; } = TimeSpan.FromSeconds(60);
@@ -93,6 +95,8 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
 
         _logger.LogInformation("DevTools target framework: {Tfm}", tfm);
+
+        SweepStaleTempDirectories(tfm);
 
         string? version;
         try
@@ -342,6 +346,39 @@ internal sealed class AlcopsAnalyzerProvisioner
         }
 
         return best;
+    }
+
+    private void SweepStaleTempDirectories(string tfm)
+    {
+        var tfmDir = Path.Combine(_cacheRoot, tfm);
+        if (!Directory.Exists(tfmDir))
+            return;
+
+        var count = 0;
+        try
+        {
+            foreach (var dir in Directory.EnumerateDirectories(tfmDir, "*.tmp-*"))
+            {
+                try
+                {
+                    if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < StaleTempDirectoryAge)
+                        continue;
+                    Directory.Delete(dir, recursive: true);
+                    count++;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogDebug(ex, "ALCops analyzers: could not remove stale extraction directory {Dir}", dir);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "ALCops analyzers: could not enumerate extraction directories in {Dir}", tfmDir);
+        }
+
+        if (count > 0)
+            _logger.LogInformation("ALCops analyzers: removed {Count} stale extraction directories", count);
     }
 
     internal static bool IsCacheValid(string cacheDir)

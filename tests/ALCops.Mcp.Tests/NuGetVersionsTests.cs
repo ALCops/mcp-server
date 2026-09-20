@@ -100,4 +100,26 @@ public class NuGetVersionsTests
 
         Assert.Equal("1.0.0+build.1", latest);
     }
+
+    [Fact]
+    public void Parse_Prerelease_StableOutranksItsOwnReleaseCandidate()
+    {
+        var json = """{"versions":["1.0.0-rc.1","1.0.0"]}""";
+
+        var (latest, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.0.0", latest);
+        Assert.Equal("1.0.0", prerelease);
+    }
+
+    [Fact]
+    public void Parse_Prerelease_NewerPrereleaseOutranksOlderStable()
+    {
+        var json = """{"versions":["1.0.0","1.1.0-rc.1"]}""";
+
+        var (latest, prerelease) = NuGetVersions.Parse(json);
+
+        Assert.Equal("1.0.0", latest);
+        Assert.Equal("1.1.0-rc.1", prerelease);
+    }
 }
