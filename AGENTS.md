@@ -67,7 +67,7 @@ When passing analyzers to the child `almcp`, their sibling dependencies must tra
 - Tools return JSON-serialized results. Errors are caught and returned as `{ error, message }` JSON, not thrown.
 - `apply_fix` writes to disk and reloads the project session; `apply_fix_all` does the same across every occurrence of a rule (unless `dryRun`); the other two are read-only.
 - `al_compile` defaults to `onlyErrors: true` while nearly every ALCops rule is a warning — callers must pass `onlyErrors: false`. This is documented rather than patched, because `ForwardAsync` stays a generic passthrough.
-- After `apply_fix` / `apply_fix_all`, verify with `al_compile` (`onlyErrors: false`), not `al_getdiagnostics`. almcp's child has a `ProjectWatcher` (`FileSystemWatcher`) that re-reads changed `.al` files, and `al_compile` awaits `WaitForProcessingAsync` before compiling, so it picks up on-disk changes reliably. `al_getdiagnostics` returns cached compilation results without re-analyzing and will report stale diagnostics.
+- After `apply_fix` / `apply_fix_all`, verify with `al_compile` (`onlyErrors: false`), not `al_getdiagnostics`. almcp's `ProjectWatcher` (`FileSystemWatcher`) re-reads changed `.al` files, and `al_compile` awaits `WaitForProcessingAsync` before compiling, so it normally picks up on-disk changes before the compile starts. The gate starts signalled and has no debounce, so on slow file systems or right after a large `apply_fix_all` a second `al_compile` may be needed if the watcher has not yet delivered the change notification. `al_getdiagnostics` returns cached compilation results without re-analyzing and will report stale diagnostics. `al_build` does not await the watcher at all.
 
 ## Conventions
 
