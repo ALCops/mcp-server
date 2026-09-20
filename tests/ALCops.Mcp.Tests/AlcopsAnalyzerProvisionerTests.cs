@@ -375,7 +375,7 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     [Fact]
     public void ExtractPackage_TargetInvalidAndUndeletable_ReturnsTempDir()
     {
-        if (!OperatingSystem.IsWindows() && Environment.UserName == "root")
+        if (!OperatingSystem.IsWindows() && Environment.IsPrivilegedProcess)
             return;
 
         var invalidDir = SeedInvalidCache("1.2.0");
@@ -389,7 +389,7 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
             var logger = new CapturingLogger();
             var handler = new FakeHandler();
-            var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
             var result = provisioner.ExtractPackage(nupkgPath, "1.2.0", Tfm, "test");
 
             Assert.NotEqual(invalidDir, result);
@@ -398,6 +398,14 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
             Assert.True(File.Exists(Path.Combine(result, "ALCops.Fake.dll")));
             Assert.Contains(logger.Entries, e =>
                 e.Level == LogLevel.Warning && e.Message.Contains("could not be replaced"));
+
+            var lockFilePath = Path.Combine(result, ".in-use");
+            Assert.True(File.Exists(lockFilePath));
+            Assert.Throws<IOException>(() =>
+                new FileStream(lockFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None).Dispose());
+
+            provisioner.Dispose();
+            using var released = new FileStream(lockFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         }
         finally
         {
@@ -426,6 +434,53 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         Assert.True(Directory.Exists(freshDir));
         Assert.NotNull(result);
         Assert.EndsWith("1.1.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public async Task Sweep_SkipsTempDirectoryHeldByAnotherProcess()
+    {
+        var heldDir = Path.Combine(_cacheRoot, Tfm, "1.2.0.tmp-held");
+        Directory.CreateDirectory(heldDir);
+        Directory.SetLastWriteTimeUtc(heldDir, DateTime.UtcNow.AddHours(-2));
+
+        FileStream? holdLock = null;
+        try
+        {
+            holdLock = new FileStream(
+                Path.Combine(heldDir, ".in-use"),
+                FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, bufferSize: 1, FileOptions.None);
+
+            SeedCache("1.1.0");
+
+            var handler = new FakeHandler { ThrowOnRequest = true };
+            using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+            await provisioner.ProvisionAsync(CancellationToken.None);
+            var result = await provisioner.Ready;
+
+            Assert.True(Directory.Exists(heldDir));
+            Assert.NotNull(result);
+            Assert.EndsWith("1.1.0", Path.GetFileName(result));
+        }
+        finally
+        {
+            holdLock?.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Sweep_CoversEveryTfmFolder()
+    {
+        var otherTfmDir = Path.Combine(_cacheRoot, "net8.0", "1.0.0.tmp-old");
+        Directory.CreateDirectory(otherTfmDir);
+        Directory.SetLastWriteTimeUtc(otherTfmDir, DateTime.UtcNow.AddHours(-2));
+
+        SeedCache("1.1.0");
+
+        var handler = new FakeHandler { ThrowOnRequest = true };
+        using var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
+        await provisioner.ProvisionAsync(CancellationToken.None);
+
+        Assert.False(Directory.Exists(otherTfmDir));
     }
 
     private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
