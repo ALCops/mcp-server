@@ -147,9 +147,9 @@ internal sealed class AlcopsAnalyzerProvisioner
             var (latest, prerelease) = NuGetVersions.Parse(json);
             return _option.Mode == AlcopsAnalyzersMode.Prerelease ? prerelease : latest;
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException($"NuGet index request timed out after {ResolveTimeout.TotalSeconds:0}s");
+            throw new TimeoutException($"NuGet index request timed out after {ResolveTimeout.TotalSeconds:0}s", ex);
         }
     }
 
@@ -180,9 +180,9 @@ internal sealed class AlcopsAnalyzerProvisioner
                 try { File.Delete(tempFile); } catch { }
             }
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            throw new TimeoutException($"Download of ALCops.Analyzers {version} timed out after {DownloadTimeout.TotalSeconds:0}s");
+            throw new TimeoutException($"Download of ALCops.Analyzers {version} timed out after {DownloadTimeout.TotalSeconds:0}s", ex);
         }
     }
 
@@ -252,19 +252,33 @@ internal sealed class AlcopsAnalyzerProvisioner
             {
                 _logger.LogInformation("Replacing incomplete cache directory {Dir}", targetDir);
                 try { Directory.Delete(targetDir, recursive: true); }
-                catch (IOException ex) { _logger.LogDebug(ex, "Could not delete incomplete cache directory {Dir}", targetDir); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogWarning(ex, "ALCops analyzers: could not delete incomplete cache directory {Dir}", targetDir);
+                }
             }
 
+            // Three outcomes: (1) move succeeds — temp dir becomes the cache entry,
+            // (2) move fails, targetDir is valid — another process provisioned concurrently; discard temp, use targetDir,
+            // (3) move fails, targetDir is invalid and undeletable — return temp dir for this session.
             try
             {
                 Directory.Move(tempDir, targetDir);
             }
             catch (IOException) when (Directory.Exists(targetDir))
             {
-                try { Directory.Delete(tempDir, recursive: true); } catch { }
-                if (!IsCacheValid(targetDir))
-                    throw new IOException($"ALCops analyzers: {targetDir} exists but is incomplete and could not be replaced");
-                _logger.LogInformation("v{Version} was provisioned concurrently; using {Dir}", version, targetDir);
+                if (IsCacheValid(targetDir))
+                {
+                    try { Directory.Delete(tempDir, recursive: true); } catch { }
+                    _logger.LogInformation("v{Version} was provisioned concurrently; using {Dir}", version, targetDir);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "ALCops analyzers: {TargetDir} is incomplete and could not be replaced; using {TempDir} for this session",
+                        targetDir, tempDir);
+                    return tempDir;
+                }
             }
 
             _logger.LogInformation("ALCops analyzers: v{Version} ({Tfm}) provisioned to {Dir}", version, bestTfm, targetDir);

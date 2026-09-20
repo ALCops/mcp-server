@@ -4,6 +4,7 @@ using System.Net;
 using System.Text.Json;
 using ALCops.Mcp;
 using ALCops.Mcp.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -31,17 +32,8 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     private static string NupkgUrl(string v) =>
         $"https://api.nuget.org/v3-flatcontainer/alcops.analyzers/{v}/alcops.analyzers.{v}.nupkg";
 
-    private string SeedCache(string version, params string[] files)
+    private static void WriteManifest(string dir, string version, IEnumerable<string> files)
     {
-        if (files.Length == 0)
-            files = ["ALCops.Fake.dll"];
-
-        var dir = Path.Combine(_cacheRoot, Tfm, version);
-        Directory.CreateDirectory(dir);
-
-        foreach (var file in files)
-            File.WriteAllBytes(Path.Combine(dir, file), [0x4D, 0x5A]);
-
         var manifest = new
         {
             alcopsVersion = version,
@@ -55,6 +47,20 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         File.WriteAllText(
             Path.Combine(dir, ".alcops-manifest.json"),
             JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+    }
+
+    private string SeedCache(string version, params string[] files)
+    {
+        if (files.Length == 0)
+            files = ["ALCops.Fake.dll"];
+
+        var dir = Path.Combine(_cacheRoot, Tfm, version);
+        Directory.CreateDirectory(dir);
+
+        foreach (var file in files)
+            File.WriteAllBytes(Path.Combine(dir, file), [0x4D, 0x5A]);
+
+        WriteManifest(dir, version, files);
 
         return dir;
     }
@@ -64,19 +70,7 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         var dir = Path.Combine(_cacheRoot, Tfm, version);
         Directory.CreateDirectory(dir);
 
-        var manifest = new
-        {
-            alcopsVersion = version,
-            requestedTfm = Tfm,
-            targetFramework = Tfm,
-            downloadedAt = DateTime.UtcNow.ToString("o"),
-            files = new[] { "ALCops.Fake.dll" },
-            source = "test"
-        };
-
-        File.WriteAllText(
-            Path.Combine(dir, ".alcops-manifest.json"),
-            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+        WriteManifest(dir, version, ["ALCops.Fake.dll"]);
 
         return dir;
     }
@@ -100,6 +94,9 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
     private AlcopsAnalyzerProvisioner Create(AlcopsAnalyzersOption option, FakeHandler handler) =>
         new(TestAnalyzers.ToolsLocator, option, handler, _cacheRoot,
             NullLogger<AlcopsAnalyzerProvisioner>.Instance);
+
+    private AlcopsAnalyzerProvisioner Create(AlcopsAnalyzersOption option, FakeHandler handler, ILogger<AlcopsAnalyzerProvisioner> logger) =>
+        new(TestAnalyzers.ToolsLocator, option, handler, _cacheRoot, logger);
 
     [Fact]
     public async Task Provision_ExtractsCorrectTfm_And_WritesManifest()
@@ -364,7 +361,7 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
         File.WriteAllBytes(Path.Combine(tmpDir, "ALCops.Fake.dll"), [0x4D, 0x5A]);
         File.WriteAllText(
             Path.Combine(tmpDir, ".alcops-manifest.json"),
-            System.Text.Json.JsonSerializer.Serialize(manifest, JsonDefaults.Options));
+            JsonSerializer.Serialize(manifest, JsonDefaults.Options));
 
         var handler = new FakeHandler { ThrowOnRequest = true };
         var provisioner = Create(AlcopsAnalyzersOption.Latest, handler);
@@ -373,6 +370,59 @@ public class AlcopsAnalyzerProvisionerTests : IDisposable
 
         Assert.NotNull(result);
         Assert.EndsWith("1.1.0", Path.GetFileName(result));
+    }
+
+    [Fact]
+    public void ExtractPackage_TargetInvalidAndUndeletable_ReturnsTempDir()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var invalidDir = SeedInvalidCache("1.2.0");
+        var lockFile = Path.Combine(invalidDir, "lock.bin");
+        File.WriteAllBytes(lockFile, [0x00]);
+
+        var nupkgPath = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}.nupkg");
+        FileStream? lockStream = null;
+        try
+        {
+            File.WriteAllBytes(nupkgPath, BuildFakeNupkg(($"{Tfm}", "ALCops.Fake.dll")));
+            lockStream = new FileStream(lockFile, FileMode.Open, FileAccess.Read, FileShare.None);
+
+            var logger = new CapturingLogger();
+            var handler = new FakeHandler();
+            var provisioner = Create(AlcopsAnalyzersOption.Latest, handler, logger);
+            var result = provisioner.ExtractPackage(nupkgPath, "1.2.0", Tfm, "test");
+
+            Assert.NotEqual(invalidDir, result);
+            Assert.StartsWith($"{invalidDir}.tmp-", result);
+            Assert.True(AlcopsAnalyzerProvisioner.IsCacheValid(result));
+            Assert.True(File.Exists(Path.Combine(result, "ALCops.Fake.dll")));
+            Assert.Contains(logger.Entries, e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("could not be replaced"));
+        }
+        finally
+        {
+            lockStream?.Dispose();
+            try { File.Delete(nupkgPath); } catch { }
+        }
+    }
+
+    private sealed class CapturingLogger : ILogger<AlcopsAnalyzerProvisioner>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
     }
 
     internal sealed class FakeHandler : HttpMessageHandler
