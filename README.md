@@ -65,11 +65,11 @@ The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work 
 
 Pass `--no-proxy` to serve only the native tools. Use it when your agent already registers Microsoft's `almcp` itself, so the `al_*` tools don't show up twice.
 
-> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all. The native `analyze` tool does this for you and adds filtering, sorting and `hasFix` metadata.
+> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `options: { onlyErrors: false }` or you will see no cop diagnostics at all. The flag lives inside the `options` object; a top-level `onlyErrors` is ignored. The native `analyze` tool does this for you and adds filtering, sorting and `hasFix` metadata.
 
 ### Verifying a fix
 
-After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. Both await almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second call may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
+After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile` with `options.onlyErrors: false` to confirm the diagnostic is gone. Both await almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second call may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
 
 ## Analyzers
 

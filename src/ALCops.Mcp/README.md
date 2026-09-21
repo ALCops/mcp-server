@@ -31,7 +31,7 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 **Proxied from `almcp`:** `al_compile`, `al_build`, `al_getdiagnostics`, `al_downloadsymbols`, `al_symbolsearch`, `al_publish`, `al_run_tests` and the rest of the `al_*` set. Pass `--no-proxy` to suppress these when your agent already registers `almcp` itself.
 
-> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all. The native `analyze` tool does this for you.
+> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `options: { onlyErrors: false }` (the flag lives inside the `options` object; a top-level `onlyErrors` is ignored) or you will see no cop diagnostics at all. The native `analyze` tool does this for you.
 
 ## Analyzers
 

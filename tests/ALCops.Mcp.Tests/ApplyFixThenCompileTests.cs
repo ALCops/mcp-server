@@ -12,8 +12,10 @@ namespace ALCops.Mcp.Tests;
 /// diagnostic is gone. Regression guard for the "stale diagnostics after apply_fix" report
 /// (PR #20 known issue). <c>al_getdiagnostics</c> was observed to return zero diagnostics on
 /// this fixture because it reads the existing compilation without draining almcp's file watcher.
-/// Therefore <c>al_compile</c> with <c>onlyErrors: false</c> is the only verification path
-/// this suite covers.
+/// Therefore <c>al_compile</c> with <c>options.onlyErrors: false</c> is the only verification path
+/// this suite covers. The flag lives inside almcp's <c>options</c> object; a top-level
+/// <c>onlyErrors</c> is ignored (it only worked before because an absent <c>options</c> also
+/// defaults to <c>onlyErrors: false</c>).
 /// </summary>
 [Collection(ApplyFixAlMcpFixture.CollectionName)]
 public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITestOutputHelper output) : IDisposable
@@ -36,7 +38,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         var filePath = Path.Combine(projectDir, "MyPage.al");
 
         // 1. Compile — LC0020 must be present before the fix
-        var before = await proxy.ForwardAsync("al_compile", Args(new { onlyErrors = false }), Cts.Token);
+        var before = await proxy.ForwardAsync("al_compile", Args(new { options = new { onlyErrors = false } }), Cts.Token);
         var beforeText = ConcatTextContent(before);
         output.WriteLine("=== al_compile BEFORE fix ===");
         output.WriteLine(beforeText);
@@ -67,7 +69,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
 
         // 3. Compile again — LC0020 must be gone
         fixture.Logger.Lines.Clear();
-        var after = await proxy.ForwardAsync("al_compile", Args(new { onlyErrors = false }), Cts.Token);
+        var after = await proxy.ForwardAsync("al_compile", Args(new { options = new { onlyErrors = false } }), Cts.Token);
         var afterText = ConcatTextContent(after);
         output.WriteLine("=== al_compile AFTER fix ===");
         output.WriteLine(afterText);
