@@ -43,7 +43,7 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 | Linux | `dotnet almcp.dll` | The nupkg has no extension-less launcher; the server falls back to the dotnet host automatically. |
 | macOS | `dotnet almcp.dll` | Same as Linux. |
 
-The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work on every OS regardless of `almcp` availability.
+The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work on every OS regardless of `almcp` availability. `analyze` wraps `al_compile` and therefore needs `almcp`.
 
 ## Tools
 
@@ -55,6 +55,7 @@ The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work 
 | `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
 | `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk. |
 | `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. |
+| `analyze` | Compile with all configured analyzers and return structured cop + compiler diagnostics (analyzer, hasFix, filters, summary). Wraps `al_compile` with `onlyErrors: false`; needs `almcp`. |
 
 ### Proxied from Microsoft's `almcp`
 
@@ -64,11 +65,11 @@ The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work 
 
 Pass `--no-proxy` to serve only the native tools. Use it when your agent already registers Microsoft's `almcp` itself, so the `al_*` tools don't show up twice.
 
-> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all.
+> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all. The native `analyze` tool does this for you and adds filtering, sorting and `hasFix` metadata.
 
 ### Verifying a fix
 
-After `apply_fix` or `apply_fix_all`, use `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. `al_compile` awaits almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second `al_compile` may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
+After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile` with `onlyErrors: false` to confirm the diagnostic is gone. Both await almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second call may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
 
 ## Analyzers
 

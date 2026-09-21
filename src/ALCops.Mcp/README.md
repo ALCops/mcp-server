@@ -27,11 +27,11 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 ## Tools
 
-**Native:** `list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all` — code fixes and rule discovery, which Microsoft's `almcp` does not provide.
+**Native:** `list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`, `analyze` — code fixes, rule discovery, and structured diagnostics with filtering. `analyze` wraps `al_compile` (needs `almcp`); the others work without it.
 
 **Proxied from `almcp`:** `al_compile`, `al_build`, `al_getdiagnostics`, `al_downloadsymbols`, `al_symbolsearch`, `al_publish`, `al_run_tests` and the rest of the `al_*` set. Pass `--no-proxy` to suppress these when your agent already registers `almcp` itself.
 
-> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all.
+> **`al_compile` defaults to `onlyErrors: true`.** Nearly every ALCops rule is a *warning*, so pass `onlyErrors: false` or you will see no cop diagnostics at all. The native `analyze` tool does this for you.
 
 ## Analyzers
 
