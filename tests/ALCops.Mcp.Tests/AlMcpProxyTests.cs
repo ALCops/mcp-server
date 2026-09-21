@@ -190,6 +190,22 @@ public sealed class AlMcpFixture : IAsyncLifetime
         return new AlMcpProxy(Locator!, resolver, logger);
     }
 
+    /// <summary>
+    /// A proxy over multiple project directories, not yet started. For tests that need diagnostics
+    /// from more than one AL project in the same almcp workspace.
+    /// </summary>
+    public static AlMcpProxy CreateProxy(CapturingLogger logger, IReadOnlyList<string> projectDirs)
+    {
+        var (analyzerResolver, loader) = TestAnalyzers.CreateAnalyzerResolver(Locator!);
+        var resolver = new WorkspaceStartupResolver(
+            analyzerResolver,
+            loader,
+            NullLogger<WorkspaceStartupResolver>.Instance,
+            [.. projectDirs]);
+
+        return new AlMcpProxy(Locator!, resolver, logger);
+    }
+
     public async Task InitializeAsync()
     {
         if (!IsAvailable)
