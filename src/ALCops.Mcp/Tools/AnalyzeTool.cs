@@ -52,6 +52,13 @@ public sealed class AnalyzeTool
             if (callerPassedProjectPath)
             {
                 enrichmentProject = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectPath!));
+
+                var knownProjects = workspaceResolver.Config.ProjectDirectories
+                    .Select(p => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p))).ToList();
+                if (!knownProjects.Contains(enrichmentProject, StringComparer.OrdinalIgnoreCase))
+                    return Error("UnknownProject",
+                        $"'{projectPath}' is not one of the AL projects this server was started with: " +
+                        $"{string.Join(", ", knownProjects)}. Pass one of those, or restart the server with --projects.");
             }
             else if (scopePath is not null)
             {
@@ -69,13 +76,8 @@ public sealed class AnalyzeTool
                     "No AL project available. Pass projectPath, or start the server from a folder " +
                     "containing app.json (or use --projects).");
 
-            string? projectScopeFilter;
-            if (callerPassedProjectPath)
-                projectScopeFilter = enrichmentProject;
-            else if (!callerPassedFileOrFolder)
-                projectScopeFilter = enrichmentProject;
-            else
-                projectScopeFilter = null;
+            // Project filter applies when projectPath is explicit or when no file/folder scope was given.
+            var projectScopeFilter = callerPassedFileOrFolder && !callerPassedProjectPath ? null : enrichmentProject;
 
             if (limit <= 0)
                 return Error("InvalidLimit", "limit must be a positive integer.");
@@ -118,15 +120,8 @@ public sealed class AnalyzeTool
             var (filtered, droppedUnlocated) = CompileDiagnosticsParser.Filter(enriched, filter);
             var sorted = CompileDiagnosticsParser.Sort(filtered);
 
-            if (!succeeded)
-            {
-                warnings.Insert(0,
-                    $"al_compile reported succeeded=false: {raw.Count} diagnostics workspace-wide, {filtered.Count} after filtering.");
-
-                if (droppedUnlocated > 0)
-                    warnings.Add(
-                        $"{droppedUnlocated} diagnostic(s) without a file location were excluded by the scope filter; call analyze without scope arguments to see them.");
-            }
+            var compileWarnings = CompileDiagnosticsParser.BuildWarnings(succeeded, raw.Count, filtered.Count, droppedUnlocated);
+            warnings.InsertRange(0, compileWarnings);
 
             var analyzeResult = CompileDiagnosticsParser.Build(enrichmentProject, sorted, limit, warnings);
 

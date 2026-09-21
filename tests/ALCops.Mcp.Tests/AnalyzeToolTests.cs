@@ -278,6 +278,26 @@ public sealed class AnalyzeToolIntegrationTests(AnalyzeAlMcpFixture fixture, ITe
         Assert.Equal("InvalidLimit", doc.RootElement.GetProperty("error").GetString());
     }
 
+    [AlMcpFact]
+    public async Task UnknownProject_ReturnsError()
+    {
+        var bogus = Path.Combine(Path.GetDirectoryName(fixture.ProjA)!, "NonExistent");
+        var json = await AnalyzeTool.Analyze(
+            fixture.ServiceProvider,
+            fixture.AnalyzerResolver,
+            fixture.WorkspaceResolver,
+            projectPath: bogus,
+            cancellationToken: Cts.Token);
+
+        output.WriteLine(json);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("UnknownProject", doc.RootElement.GetProperty("error").GetString());
+
+        var message = doc.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains(fixture.ProjA, message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(fixture.ProjB, message, StringComparison.OrdinalIgnoreCase);
+    }
+
 }
 
 public sealed class AnalyzeAlMcpFixture : IAsyncLifetime

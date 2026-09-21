@@ -232,6 +232,19 @@ public static partial class CompileDiagnosticsParser
             .ThenBy(d => d.Id, StringComparer.Ordinal)
             .ToList();
 
+    public static IReadOnlyList<string> BuildWarnings(bool succeeded, int rawCount, int filteredCount, int droppedUnlocated)
+    {
+        var warnings = new List<string>();
+
+        if (!succeeded)
+            warnings.Add($"al_compile reported succeeded=false: {rawCount} diagnostics workspace-wide, {filteredCount} after filtering.");
+
+        if (droppedUnlocated > 0)
+            warnings.Add($"{droppedUnlocated} diagnostic(s) without a file location were excluded by the scope filter; call analyze without scope arguments to see them.");
+
+        return warnings;
+    }
+
     public static AnalyzeResult Build(string project, IReadOnlyList<AnalyzeDiagnostic> filteredSorted, int limit, IReadOnlyList<string> warnings)
     {
         var totalCount = filteredSorted.Count;

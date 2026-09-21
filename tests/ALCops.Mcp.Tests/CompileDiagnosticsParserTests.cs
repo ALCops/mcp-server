@@ -604,27 +604,43 @@ public sealed class CompileDiagnosticsParserTests
         Assert.Null(CompileDiagnosticsParser.FindContainingProject(file, projects));
     }
 
-    // --- Succeeded=false warning text ---
+    // --- BuildWarnings ---
 
     [Fact]
-    public void SucceededFalse_WarningText_Format()
+    public void BuildWarnings_SucceededFalse_OnlySucceededWarning()
     {
-        var rawCount = 5;
-        var filteredCount = 3;
-        var expected = $"al_compile reported succeeded=false: {rawCount} diagnostics workspace-wide, {filteredCount} after filtering.";
+        var warnings = CompileDiagnosticsParser.BuildWarnings(succeeded: false, rawCount: 7, filteredCount: 3, droppedUnlocated: 0);
 
-        Assert.Contains("succeeded=false", expected);
-        Assert.Contains("5 diagnostics workspace-wide", expected);
-        Assert.Contains("3 after filtering", expected);
+        Assert.Single(warnings);
+        Assert.Contains("succeeded=false", warnings[0]);
+        Assert.Contains("7 diagnostics workspace-wide", warnings[0]);
+        Assert.Contains("3 after filtering", warnings[0]);
     }
 
     [Fact]
-    public void DroppedUnlocated_WarningText_Format()
+    public void BuildWarnings_SucceededTrue_DroppedUnlocated_OnlyDroppedWarning()
     {
-        var n = 2;
-        var expected = $"{n} diagnostic(s) without a file location were excluded by the scope filter; call analyze without scope arguments to see them.";
+        var warnings = CompileDiagnosticsParser.BuildWarnings(succeeded: true, rawCount: 5, filteredCount: 4, droppedUnlocated: 1);
 
-        Assert.Contains("2 diagnostic(s)", expected);
-        Assert.Contains("scope filter", expected);
+        Assert.Single(warnings);
+        Assert.StartsWith("1 diagnostic(s) without a file location", warnings[0]);
+    }
+
+    [Fact]
+    public void BuildWarnings_SucceededFalse_DroppedUnlocated_BothWarningsInOrder()
+    {
+        var warnings = CompileDiagnosticsParser.BuildWarnings(succeeded: false, rawCount: 10, filteredCount: 6, droppedUnlocated: 2);
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("succeeded=false", warnings[0]);
+        Assert.Contains("2 diagnostic(s) without a file location", warnings[1]);
+    }
+
+    [Fact]
+    public void BuildWarnings_SucceededTrue_NoneDropped_Empty()
+    {
+        var warnings = CompileDiagnosticsParser.BuildWarnings(succeeded: true, rawCount: 5, filteredCount: 5, droppedUnlocated: 0);
+
+        Assert.Empty(warnings);
     }
 }
