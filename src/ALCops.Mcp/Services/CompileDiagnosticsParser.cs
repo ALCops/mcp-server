@@ -15,6 +15,7 @@ public sealed record AnalyzeFilter(
     string? FilePath,
     string? FolderPath,
     string? ProjectPath,
+    bool IncludeUnlocated,
     IReadOnlySet<string>? Severities,
     IReadOnlySet<string>? Analyzers,
     IReadOnlySet<string>? RuleIds);
@@ -73,44 +74,25 @@ public static partial class CompileDiagnosticsParser
         if (string.IsNullOrWhiteSpace(location))
             return default;
 
-        if (!location.EndsWith(')'))
+        var match = LocationRegex().Match(location);
+        if (!match.Success)
             return default;
 
-        var lastAt = location.LastIndexOf('@');
-        if (lastAt < 0)
+        var path = match.Groups["path"].Value;
+        if (path.Length == 0)
             return default;
 
-        var kindEnd = -1;
-        for (var i = 0; i < location.Length; i++)
-        {
-            if (!char.IsLetter(location[i]))
-            {
-                kindEnd = i;
-                break;
-            }
-        }
-
-        if (kindEnd < 0 || kindEnd >= location.Length || location[kindEnd] != '(')
+        if (!int.TryParse(match.Groups["line"].ValueSpan, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var line))
             return default;
 
-        var kind = location[..kindEnd];
-        if (kind.Equals("None", StringComparison.Ordinal))
-            return default;
-
-        var path = location[(kindEnd + 1)..lastAt];
-        var coords = location[(lastAt + 1)..^1];
-        var colonIdx = coords.IndexOf(':');
-        if (colonIdx < 0)
-            return default;
-
-        if (!int.TryParse(coords[..colonIdx], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var line))
-            return default;
-
-        if (!int.TryParse(coords[(colonIdx + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var column))
+        if (!int.TryParse(match.Groups["col"].ValueSpan, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var column))
             return default;
 
         return new ParsedLocation(path, line, column);
     }
+
+    [GeneratedRegex(@"^(?!None\b)[A-Za-z]+\((?<path>.*)@(?<line>\d+):(?<col>\d+)\)$", RegexOptions.CultureInvariant)]
+    private static partial Regex LocationRegex();
 
     public static IReadOnlyList<string> ExtractWarnings(string? message)
     {
@@ -176,17 +158,20 @@ public static partial class CompileDiagnosticsParser
         return result;
     }
 
-    public static IReadOnlyList<AnalyzeDiagnostic> Filter(IReadOnlyList<AnalyzeDiagnostic> all, AnalyzeFilter filter)
+    public static (IReadOnlyList<AnalyzeDiagnostic> Filtered, int DroppedUnlocated) Filter(IReadOnlyList<AnalyzeDiagnostic> all, AnalyzeFilter filter)
     {
         var result = new List<AnalyzeDiagnostic>();
-        var hasScope = filter.FilePath is not null || filter.FolderPath is not null || filter.ProjectPath is not null;
+        var droppedUnlocated = 0;
 
         foreach (var d in all)
         {
             if (d.FilePath is null)
             {
-                if (hasScope)
+                if (!filter.IncludeUnlocated)
+                {
+                    droppedUnlocated++;
                     continue;
+                }
             }
             else
             {
@@ -215,7 +200,28 @@ public static partial class CompileDiagnosticsParser
             result.Add(d);
         }
 
-        return result;
+        return (result, droppedUnlocated);
+    }
+
+    public static string? FindContainingProject(string path, IReadOnlyList<string> projectDirectories)
+    {
+        string? best = null;
+        var bestLen = -1;
+
+        foreach (var project in projectDirectories)
+        {
+            if (project.Length <= bestLen)
+                continue;
+
+            if (path.Equals(project, StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith(project + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                best = project;
+                bestLen = project.Length;
+            }
+        }
+
+        return best;
     }
 
     public static IReadOnlyList<AnalyzeDiagnostic> Sort(IEnumerable<AnalyzeDiagnostic> diagnostics) =>

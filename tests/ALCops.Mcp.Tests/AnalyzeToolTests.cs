@@ -148,13 +148,16 @@ public sealed class AnalyzeToolIntegrationTests(AnalyzeAlMcpFixture fixture, ITe
         var result = await RunAnalyze();
 
         Assert.NotEmpty(result.Diagnostics);
-        Assert.All(result.Diagnostics, d =>
-        {
-            Assert.NotNull(d.FilePath);
+        var located = result.Diagnostics.Where(d => d.FilePath is not null).ToList();
+        Assert.NotEmpty(located);
+        Assert.All(located, d =>
             Assert.True(
-                d.FilePath.StartsWith(fixture.ProjA + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
-                $"Expected path under primary project {fixture.ProjA}, got {d.FilePath}");
-        });
+                d.FilePath!.StartsWith(fixture.ProjA + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
+                $"Expected path under primary project {fixture.ProjA}, got {d.FilePath}"));
+        Assert.Equal(fixture.ProjA, result.Project, ignoreCase: true);
+
+        Assert.DoesNotContain(result.Diagnostics, d =>
+            d.FilePath is not null && d.FilePath.StartsWith(fixture.ProjB + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
     }
 
     [AlMcpFact]
@@ -220,6 +223,45 @@ public sealed class AnalyzeToolIntegrationTests(AnalyzeAlMcpFixture fixture, ITe
 
         Assert.All(result.Diagnostics, d =>
             Assert.Matches("^AL\\d{4}$", d.Id));
+    }
+
+    [AlMcpFact]
+    public async Task FilePathInProjB_NoProjectPath_ReturnsProjBDiagnosticsOnly()
+    {
+        var pageA = Path.Combine(fixture.ProjB, "PageA.al");
+        var result = await RunAnalyze(filePath: pageA);
+
+        Assert.NotEmpty(result.Diagnostics);
+        Assert.All(result.Diagnostics, d =>
+        {
+            Assert.NotNull(d.FilePath);
+            Assert.Equal(pageA, d.FilePath, ignoreCase: true);
+        });
+        Assert.Contains(result.Diagnostics, d => d.Analyzer == "ALCops.LinterCop");
+        Assert.Equal(fixture.ProjB, result.Project, ignoreCase: true);
+    }
+
+    [AlMcpFact]
+    public async Task FolderPathProjB_NoProjectPath_ReturnsProjBDiagnostics()
+    {
+        var result = await RunAnalyze(folderPath: fixture.ProjB);
+
+        Assert.NotEmpty(result.Diagnostics);
+        Assert.All(result.Diagnostics, d =>
+        {
+            Assert.NotNull(d.FilePath);
+            Assert.True(
+                d.FilePath.StartsWith(fixture.ProjB + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase),
+                $"Expected path under {fixture.ProjB}, got {d.FilePath}");
+        });
+
+        var fileNames = result.Diagnostics.Select(d => Path.GetFileName(d.FilePath!)).Distinct().ToList();
+        Assert.Contains("PageA.al", fileNames);
+        Assert.Contains("PageB.al", fileNames);
+        Assert.Equal(fixture.ProjB, result.Project, ignoreCase: true);
+
+        Assert.DoesNotContain(result.Diagnostics, d =>
+            d.FilePath is not null && d.FilePath.StartsWith(fixture.ProjA + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
     }
 
     [AlMcpFact]

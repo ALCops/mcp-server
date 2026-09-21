@@ -319,8 +319,8 @@ public sealed class CompileDiagnosticsParserTests
             new(@"C:\ws\App\Other.al", 2, 1, "LC0020", "Warning", "msg", "Cop", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            @"c:\WS\app\MYPAGE.AL", null, null, null, null, null));
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            @"c:\WS\app\MYPAGE.AL", null, null, false, null, null, null));
 
         Assert.Single(filtered);
         Assert.Equal(@"C:\ws\App\MyPage.al", filtered[0].FilePath);
@@ -341,8 +341,8 @@ public sealed class CompileDiagnosticsParserTests
             new(exact, 3, 1, "LC0020", "Warning", "msg", "Cop", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            null, $"C:{sep}ws{sep}App", null, null, null, null));
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            null, $"C:{sep}ws{sep}App", null, false, null, null, null));
 
         Assert.Single(filtered);
         Assert.Equal(inside, filtered[0].FilePath);
@@ -361,27 +361,51 @@ public sealed class CompileDiagnosticsParserTests
             new(other, 2, 1, "LC0020", "Warning", "msg", "Cop", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            match, null, $"C:{sep}ws{sep}App", null, null, null));
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            match, null, $"C:{sep}ws{sep}App", false, null, null, null));
 
         Assert.Single(filtered);
         Assert.Equal(match, filtered[0].FilePath);
     }
 
     [Fact]
-    public void Filter_UnlocatedDiagnostics_KeptWithoutScope_DroppedWithScope()
+    public void Filter_UnlocatedDiagnostics_KeptWhenIncludeUnlocated()
     {
         var diags = new List<AnalyzeDiagnostic>
         {
             new(null, null, null, "AL0001", "Error", "Unlocated", "Compiler", false),
         };
 
-        var noScope = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(null, null, null, null, null, null));
-        Assert.Single(noScope);
+        var (kept, droppedKept) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(null, null, null, true, null, null, null));
+        Assert.Single(kept);
+        Assert.Equal(0, droppedKept);
+    }
 
-        var withScope = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            null, null, "C:\\ws\\App", null, null, null));
-        Assert.Empty(withScope);
+    [Fact]
+    public void Filter_UnlocatedDiagnostics_DroppedWhenNotIncludeUnlocated()
+    {
+        var diags = new List<AnalyzeDiagnostic>
+        {
+            new(null, null, null, "AL0001", "Error", "Unlocated", "Compiler", false),
+        };
+
+        var (dropped, droppedCount) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(null, null, null, false, null, null, null));
+        Assert.Empty(dropped);
+        Assert.Equal(1, droppedCount);
+    }
+
+    [Fact]
+    public void Filter_UnlocatedDiagnostics_DroppedWithScope()
+    {
+        var diags = new List<AnalyzeDiagnostic>
+        {
+            new(null, null, null, "AL0001", "Error", "Unlocated", "Compiler", false),
+        };
+
+        var (filtered, droppedCount) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            null, null, "C:\\ws\\App", false, null, null, null));
+        Assert.Empty(filtered);
+        Assert.Equal(1, droppedCount);
     }
 
     [Fact]
@@ -393,8 +417,8 @@ public sealed class CompileDiagnosticsParserTests
             new("b.al", 1, 1, "AL0001", "Error", "msg", "Compiler", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            null, null, null,
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            null, null, null, false,
             new HashSet<string>(["warning"], StringComparer.OrdinalIgnoreCase),
             null, null));
 
@@ -412,8 +436,8 @@ public sealed class CompileDiagnosticsParserTests
             new("c.al", 1, 1, "AA0001", "Warning", "msg", "CodeCop", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            null, null, null, null,
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            null, null, null, false, null,
             new HashSet<string>(["compiler", "alcops.lintercop"], StringComparer.OrdinalIgnoreCase),
             null));
 
@@ -429,8 +453,8 @@ public sealed class CompileDiagnosticsParserTests
             new("b.al", 1, 1, "AL0001", "Error", "msg", "Compiler", false),
         };
 
-        var filtered = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
-            null, null, null, null, null,
+        var (filtered, _) = CompileDiagnosticsParser.Filter(diags, new AnalyzeFilter(
+            null, null, null, false, null, null,
             new HashSet<string>(["lc0020"], StringComparer.OrdinalIgnoreCase)));
 
         Assert.Single(filtered);
@@ -522,5 +546,85 @@ public sealed class CompileDiagnosticsParserTests
 
         var diagKeys = doc.RootElement.GetProperty("diagnostics")[0].EnumerateObject().Select(p => p.Name).ToList();
         Assert.Equal(["filePath", "line", "column", "id", "severity", "message", "analyzer", "hasFix"], diagKeys);
+    }
+
+    // --- FindContainingProject ---
+
+    [Fact]
+    public void FindContainingProject_FileInsideProject_ReturnsProject()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var projects = new List<string> { $"C:{sep}ws{sep}App" };
+        var file = $"C:{sep}ws{sep}App{sep}src{sep}X.al";
+
+        Assert.Equal($"C:{sep}ws{sep}App", CompileDiagnosticsParser.FindContainingProject(file, projects));
+    }
+
+    [Fact]
+    public void FindContainingProject_ExactMatch_ReturnsProject()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var projects = new List<string> { $"C:{sep}ws{sep}App" };
+        var path = $"C:{sep}ws{sep}App";
+
+        Assert.Equal($"C:{sep}ws{sep}App", CompileDiagnosticsParser.FindContainingProject(path, projects));
+    }
+
+    [Fact]
+    public void FindContainingProject_SiblingFolder_ReturnsNull()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var projects = new List<string> { $"C:{sep}ws{sep}App" };
+        var file = $"C:{sep}ws{sep}AppSource{sep}X.al";
+
+        Assert.Null(CompileDiagnosticsParser.FindContainingProject(file, projects));
+    }
+
+    [Fact]
+    public void FindContainingProject_LongestPrefixWins()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var projects = new List<string>
+        {
+            $"C:{sep}ws",
+            $"C:{sep}ws{sep}App"
+        };
+        var file = $"C:{sep}ws{sep}App{sep}src{sep}X.al";
+
+        Assert.Equal($"C:{sep}ws{sep}App", CompileDiagnosticsParser.FindContainingProject(file, projects));
+    }
+
+    [Fact]
+    public void FindContainingProject_NoMatch_ReturnsNull()
+    {
+        var sep = Path.DirectorySeparatorChar;
+        var projects = new List<string> { $"C:{sep}ws{sep}App" };
+        var file = $"D:{sep}other{sep}X.al";
+
+        Assert.Null(CompileDiagnosticsParser.FindContainingProject(file, projects));
+    }
+
+    // --- Succeeded=false warning text ---
+
+    [Fact]
+    public void SucceededFalse_WarningText_Format()
+    {
+        var rawCount = 5;
+        var filteredCount = 3;
+        var expected = $"al_compile reported succeeded=false: {rawCount} diagnostics workspace-wide, {filteredCount} after filtering.";
+
+        Assert.Contains("succeeded=false", expected);
+        Assert.Contains("5 diagnostics workspace-wide", expected);
+        Assert.Contains("3 after filtering", expected);
+    }
+
+    [Fact]
+    public void DroppedUnlocated_WarningText_Format()
+    {
+        var n = 2;
+        var expected = $"{n} diagnostic(s) without a file location were excluded by the scope filter; call analyze without scope arguments to see them.";
+
+        Assert.Contains("2 diagnostic(s)", expected);
+        Assert.Contains("scope filter", expected);
     }
 }
