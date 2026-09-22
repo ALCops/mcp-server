@@ -23,6 +23,7 @@ public readonly record struct RefreshSummary(int Updated, int Added, int Removed
 public sealed class ProjectSession : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private volatile bool _disposed;
     private ImmutableDictionary<string, TrackedDocument> _documents;
     private ImmutableDictionary<string, DocumentId> _filePathToDocumentId;
 
@@ -81,6 +82,9 @@ public sealed class ProjectSession : IDisposable
         await _gate.WaitAsync(ct);
         try
         {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(ProjectSession));
+
             var onDisk = new HashSet<string>(
                 ProjectLoader.EnumerateAlFiles(ProjectPath),
                 StringComparer.OrdinalIgnoreCase);
@@ -106,25 +110,16 @@ public sealed class ProjectSession : IDisposable
 
                 if (_documents.TryGetValue(path, out var tracked))
                 {
-                    FileInfo fi;
-                    try { fi = new FileInfo(path); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
-                        continue;
-                    }
-
-                    var stamp = FileStamp.Of(fi);
-                    if (stamp == tracked.Stamp)
+                    var stamp = TryStat(path);
+                    if (stamp is null)
                         continue;
 
-                    string newText;
-                    try { newText = await File.ReadAllTextAsync(path, ct); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                    if (stamp.Value == tracked.Stamp)
                         continue;
-                    }
+
+                    var newText = await TryReadAsync(path, ct);
+                    if (newText is null)
+                        continue;
 
                     var doc = Workspace.CurrentSolution.GetDocument(tracked.Id);
                     if (doc is null)
@@ -140,33 +135,23 @@ public sealed class ProjectSession : IDisposable
                     // An edit that keeps both length and mtime identical is missed (FAT-class 2s
                     // timestamps only); the content compare protects the other direction (touch /
                     // git checkout without content change keeps compilation state).
-                    newDocs[path] = tracked with { Stamp = stamp };
+                    newDocs[path] = tracked with { Stamp = stamp.Value };
                 }
                 else
                 {
-                    FileInfo fi;
-                    try { fi = new FileInfo(path); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                    var stamp = TryStat(path);
+                    if (stamp is null)
                         continue;
-                    }
 
-                    var stamp = FileStamp.Of(fi);
-
-                    string content;
-                    try { content = await File.ReadAllTextAsync(path, ct); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                    var content = await TryReadAsync(path, ct);
+                    if (content is null)
                         continue;
-                    }
 
                     // OnDocument* calls are in-memory only
                     var docInfo = ProjectLoader.CreateDocumentInfo(ProjectId, path, content);
                     await Workspace.AddDocumentAsync(docInfo);
 
-                    newDocs[path] = new TrackedDocument(docInfo.Id, stamp);
+                    newDocs[path] = new TrackedDocument(docInfo.Id, stamp.Value);
                     added++;
                 }
             }
@@ -187,14 +172,44 @@ public sealed class ProjectSession : IDisposable
         }
         finally
         {
-            _gate.Release();
+            try { _gate.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
     public void Dispose()
     {
+        _disposed = true;
+        if (_gate.Wait(TimeSpan.FromSeconds(5)))
+            _gate.Release();
         Workspace.Dispose();
         _gate.Dispose();
+    }
+
+    internal static FileStamp? TryStat(string path)
+    {
+        try
+        {
+            return FileStamp.Of(new FileInfo(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+            return null;
+        }
+    }
+
+    internal static async Task<string?> TryReadAsync(string path, CancellationToken ct)
+    {
+        try
+        {
+            return await File.ReadAllTextAsync(path, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+            return null;
+        }
     }
 
     private static ImmutableDictionary<string, DocumentId> BuildDocumentIdMap(

@@ -15,7 +15,7 @@ public sealed class ApplyFixAllTool
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
-        "are left untouched and listed in 'conflicts'; the other files are still written. " +
+        "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics'; the other files are still written. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,
@@ -129,8 +129,10 @@ public sealed class ApplyFixAllTool
             }
 
             string? conflictMessage = conflicts.Count > 0
-                ? $"{conflicts.Count} file(s) were skipped because they changed on disk while the fix was being computed; re-run apply_fix_all to fix them."
+                ? $"{conflicts.Count} file(s) were skipped because they changed on disk while the fix was being computed; their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them."
                 : null;
+
+            var unfixed = MergeUnfixed(result, conflicts);
 
             return JsonSerializer.Serialize(new
             {
@@ -143,7 +145,7 @@ public sealed class ApplyFixAllTool
                 filesChanged = dryRun ? result.Changes.Select(c => c.FilePath).ToArray() : written.ToArray(),
                 conflicts,
                 message = conflictMessage,
-                unfixedDiagnostics = result.Unfixed,
+                unfixedDiagnostics = unfixed,
                 warning
             }, JsonDefaults.Options);
         }
@@ -151,5 +153,19 @@ public sealed class ApplyFixAllTool
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
         }
+    }
+
+    internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixed(
+        FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts)
+    {
+        if (conflicts.Count == 0)
+            return result.Unfixed;
+
+        var conflictPaths = new HashSet<string>(
+            conflicts.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
+
+        return [.. result.Unfixed, .. result.Changes
+            .Where(c => conflictPaths.Contains(c.FilePath))
+            .SelectMany(c => c.Diagnostics)];
     }
 }

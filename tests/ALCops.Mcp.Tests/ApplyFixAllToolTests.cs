@@ -1,6 +1,8 @@
 using System.Text.Json;
+using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
+using Microsoft.Dynamics.Nav.CodeAnalysis.CodeFixes;
 using Xunit;
 
 namespace ALCops.Mcp.Tests;
@@ -275,5 +277,81 @@ public class ApplyFixAllToolTests
         Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_Changes_CarryDiagnosticLocations()
+    {
+        using var ctx = new TestContext();
+        var session = await ctx.SessionManager.GetOrLoadProjectAsync(ctx.ProjectPath);
+        var analyzerSet = await ctx.AnalyzerResolver.ResolveAsync(ctx.ProjectPath, null);
+
+        var result = await ctx.CodeFixRunner.ApplyFixAllAsync(
+            session, "LC0020", FixAllScope.Project, null, null, analyzerSet);
+
+        Assert.Equal(FixAllStatus.Completed, result.Status);
+        Assert.Equal(2, result.Changes.Count);
+
+        var pageAChange = result.Changes.Single(c => Path.GetFileName(c.FilePath) == "PageA.al");
+        Assert.Single(pageAChange.Diagnostics);
+        Assert.Equal(11, pageAChange.Diagnostics[0].Line);
+
+        var pageBChange = result.Changes.Single(c => Path.GetFileName(c.FilePath) == "PageB.al");
+        Assert.Single(pageBChange.Diagnostics);
+        Assert.Equal(11, pageBChange.Diagnostics[0].Line);
+    }
+
+    [Fact]
+    public void MergeUnfixed_NoConflicts_ReturnsIdenticalList()
+    {
+        var unfixed = new List<FixAllUnfixedDiagnostic>
+        {
+            new("FileA.al", 5, 1)
+        };
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 2, "Fix", "key",
+            [new FixAllFileChange("FileB.al", "old", "new", [new("FileB.al", 10, 1)])],
+            [], unfixed);
+
+        var merged = ApplyFixAllTool.MergeUnfixed(result, []);
+
+        Assert.Same(result.Unfixed, merged);
+    }
+
+    [Fact]
+    public void MergeUnfixed_WithConflict_AppendsDiagnosticsFromConflictedFile()
+    {
+        var unfixed = new List<FixAllUnfixedDiagnostic> { new("FileA.al", 5, 1) };
+        var fileBDiag = new FixAllUnfixedDiagnostic("FileB.al", 10, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 3, "Fix", "key",
+            [
+                new FixAllFileChange("FileA.al", "old", "new", [new("FileA.al", 3, 1)]),
+                new FixAllFileChange("FileB.al", "old", "new", [fileBDiag]),
+            ],
+            [], unfixed);
+
+        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Equal(unfixed[0], merged[0]);
+        Assert.Equal(fileBDiag, merged[1]);
+    }
+
+    [Fact]
+    public void MergeUnfixed_CaseInsensitivePathMatch()
+    {
+        var fileBDiag = new FixAllUnfixedDiagnostic("C:\\Src\\FileB.al", 10, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 1, "Fix", "key",
+            [new FixAllFileChange("C:\\Src\\FileB.al", "old", "new", [fileBDiag])],
+            [], []);
+
+        var conflicts = new List<FileWriteConflict> { new("c:\\src\\fileb.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Single(merged);
+        Assert.Equal(fileBDiag, merged[0]);
     }
 }

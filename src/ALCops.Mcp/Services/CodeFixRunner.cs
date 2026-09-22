@@ -266,6 +266,11 @@ public sealed class CodeFixRunner
         }
 
         // Diff against the original text to find which files actually changed.
+        var diagnosticsByFile = diagnostics
+            .Where(d => d.Location.SourceTree?.FilePath is not null)
+            .GroupBy(d => d.Location.SourceTree!.FilePath!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<FixAllUnfixedDiagnostic>)[.. g.Select(ToLocation)], StringComparer.OrdinalIgnoreCase);
+
         var changes = new List<FixAllFileChange>();
         foreach (var group in diagnostics.GroupBy(d => d.Location.SourceTree?.FilePath))
         {
@@ -283,7 +288,10 @@ public sealed class CodeFixRunner
             var originalText = (await originalDocument.GetTextAsync(ct)).ToString();
             var newText = (await changedDocument.GetTextAsync(ct)).ToString();
             if (!string.Equals(originalText, newText, StringComparison.Ordinal))
-                changes.Add(new FixAllFileChange(group.Key, originalText, newText));
+            {
+                diagnosticsByFile.TryGetValue(group.Key, out var fileDiagnostics);
+                changes.Add(new FixAllFileChange(group.Key, originalText, newText, fileDiagnostics ?? []));
+            }
         }
 
         // Re-check the changed solution for any remaining occurrences of the rule so
@@ -411,14 +419,16 @@ public sealed class CodeFixRunner
                 || (d.Location.SourceTree?.FilePath is string fp
                     && Path.GetFullPath(fp).Equals(filePath, StringComparison.OrdinalIgnoreCase)));
 
-        return [.. remaining.Select(d =>
-        {
-            var lineSpan = d.Location.GetLineSpan();
-            return new FixAllUnfixedDiagnostic(
-                d.Location.SourceTree?.FilePath ?? "",
-                lineSpan.StartLinePosition.Line + 1,
-                lineSpan.StartLinePosition.Character + 1);
-        })];
+        return [.. remaining.Select(ToLocation)];
+    }
+
+    private static FixAllUnfixedDiagnostic ToLocation(Diagnostic d)
+    {
+        var lineSpan = d.Location.GetLineSpan();
+        return new FixAllUnfixedDiagnostic(
+            d.Location.SourceTree?.FilePath ?? "",
+            lineSpan.StartLinePosition.Line + 1,
+            lineSpan.StartLinePosition.Character + 1);
     }
 
     /// <summary>

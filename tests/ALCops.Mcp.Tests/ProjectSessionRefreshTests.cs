@@ -188,4 +188,43 @@ public class ProjectSessionRefreshTests : IDisposable
         var text = (await doc!.GetTextAsync()).ToString();
         Assert.Contains("// externally edited", text);
     }
+
+    [Fact]
+    public async Task LockedFile_RefreshCompletes_FileSkipped()
+    {
+        // FileShare.None is advisory on Linux; this test is meaningful only on Windows.
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var pageBPath = Path.Combine(_projectPath, "PageB.al");
+
+        // Change timestamp so the stamp differs and refresh will attempt to read the file.
+        File.SetLastWriteTimeUtc(pageBPath, DateTime.UtcNow + TimeSpan.FromMinutes(10));
+
+        // Hold the file open exclusively — File.ReadAllTextAsync will throw IOException.
+        using var lockStream = new FileStream(pageBPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        // The file was skipped (not updated), no exception escaped.
+        Assert.Equal(0, summary.Updated);
+        Assert.Equal(0, summary.Added);
+        Assert.Equal(0, summary.Removed);
+    }
+
+    [Fact]
+    public void TryStat_NonexistentPath_ReturnsNull()
+    {
+        var result = ProjectSession.TryStat(Path.Combine(_projectPath, "Nonexistent.al"));
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task TryReadAsync_NonexistentPath_ReturnsNull()
+    {
+        var result = await ProjectSession.TryReadAsync(
+            Path.Combine(_projectPath, "Nonexistent.al"), CancellationToken.None);
+        Assert.Null(result);
+    }
 }
