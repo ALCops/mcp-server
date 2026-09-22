@@ -15,7 +15,7 @@ public sealed class ApplyFixAllTool
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
-        "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics'; the other files are still written. " +
+        "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,

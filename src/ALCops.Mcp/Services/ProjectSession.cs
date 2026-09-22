@@ -80,6 +80,8 @@ public sealed class ProjectSession : IDisposable
     public async Task<RefreshSummary> RefreshFromDiskAsync(CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
+        ImmutableDictionary<string, TrackedDocument>.Builder? newDocs = null;
+        int updated = 0, added = 0, removed = 0;
         try
         {
             if (_disposed)
@@ -89,8 +91,7 @@ public sealed class ProjectSession : IDisposable
                 ProjectLoader.EnumerateAlFiles(ProjectPath),
                 StringComparer.OrdinalIgnoreCase);
 
-            int updated = 0, added = 0, removed = 0;
-            var newDocs = _documents.ToBuilder();
+            newDocs = _documents.ToBuilder();
 
             // Tracked but not on disk → remove (OnDocument* calls are in-memory only)
             foreach (var (path, tracked) in _documents)
@@ -157,13 +158,9 @@ public sealed class ProjectSession : IDisposable
             }
 
             var summary = new RefreshSummary(updated, added, removed);
-            _documents = newDocs.ToImmutable();
 
             if (summary.Any)
             {
-                if (added + removed > 0)
-                    _filePathToDocumentId = BuildDocumentIdMap(_documents);
-
                 Console.Error.WriteLine(
                     $"Refreshed {ProjectPath}: {updated} updated, {added} added, {removed} removed .al file(s).");
             }
@@ -172,6 +169,13 @@ public sealed class ProjectSession : IDisposable
         }
         finally
         {
+            if (newDocs is not null)
+            {
+                _documents = newDocs.ToImmutable();
+                if (added + removed > 0)
+                    _filePathToDocumentId = BuildDocumentIdMap(_documents);
+            }
+
             try { _gate.Release(); }
             catch (ObjectDisposedException) { }
         }
@@ -179,11 +183,15 @@ public sealed class ProjectSession : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
         if (_gate.Wait(TimeSpan.FromSeconds(5)))
+        {
             _gate.Release();
+            _gate.Dispose();
+        }
+        // Timed out: leak the gate rather than dispose it with a pending waiter.
         Workspace.Dispose();
-        _gate.Dispose();
     }
 
     internal static FileStamp? TryStat(string path)

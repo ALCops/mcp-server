@@ -214,6 +214,46 @@ public class ProjectSessionRefreshTests : IDisposable
     }
 
     [Fact]
+    public async Task CancelledToken_ThrowsAndLeavesStateConsistent()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var initialCount = session.GetProject().Documents.Count();
+
+        await File.WriteAllTextAsync(Path.Combine(_projectPath, "PageD.al"), """
+            page 50103 PageD
+            {
+                ApplicationArea = All;
+                layout { area(content) { } }
+            }
+            """);
+        await File.WriteAllTextAsync(Path.Combine(_projectPath, "PageE.al"), """
+            page 50104 PageE
+            {
+                ApplicationArea = All;
+                layout { area(content) { } }
+            }
+            """);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => session.RefreshFromDiskAsync(cts.Token));
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(2, summary.Added);
+        Assert.Equal(initialCount + 2, session.GetProject().Documents.Count());
+    }
+
+    [Fact]
+    public async Task Dispose_Idempotent()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        session.Dispose();
+        session.Dispose();
+    }
+
+    [Fact]
     public void TryStat_NonexistentPath_ReturnsNull()
     {
         var result = ProjectSession.TryStat(Path.Combine(_projectPath, "Nonexistent.al"));
