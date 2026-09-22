@@ -53,6 +53,7 @@ public class ApplyFixAllToolTests
 
         Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(2, root.GetProperty("diagnosticsFound").GetInt32());
+        Assert.Empty(root.GetProperty("conflicts").EnumerateArray());
 
         var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
             .Select(e => Path.GetFileName(e.GetString())).ToArray();
@@ -164,6 +165,95 @@ public class ApplyFixAllToolTests
 
         Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_ExternalEditBetweenCalls_PreservesExternalEdit()
+    {
+        using var ctx = new TestContext();
+
+        // Prime the session (loads all files into the workspace cache).
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // External edit: rename OtherField → RenamedField in PageB.al.
+        // The page is still valid and LC0020 still fires on the field-level ApplicationArea.
+        var pageBPath = Path.Combine(ctx.ProjectPath, "PageB.al");
+        var pageBContent = ctx.ReadFile("PageB.al");
+        await File.WriteAllTextAsync(pageBPath, pageBContent.Replace("OtherField", "RenamedField"));
+
+        // Apply for real — the refresh must pick up the rename.
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+
+        // PageB must still contain the externally-renamed field AND have exactly one ApplicationArea.
+        var pageBFinal = ctx.ReadFile("PageB.al");
+        Assert.Contains("RenamedField", pageBFinal);
+        Assert.Equal(1, CountOccurrences(pageBFinal, "ApplicationArea = All;"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_FileAddedAfterLoad_FixesNewFile()
+    {
+        using var ctx = new TestContext();
+
+        // Prime to load the initial files.
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // Add a new file with LC0020-triggering content.
+        var pageDContent = ctx.ReadFile("PageB.al")
+            .Replace("50101", "50103")
+            .Replace("PageB", "PageD");
+        await File.WriteAllTextAsync(Path.Combine(ctx.ProjectPath, "PageD.al"), pageDContent);
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
+
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetString())).ToArray();
+        Assert.Contains("PageD.al", filesChanged);
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_FileDeletedAfterLoad_FixesRemainingFiles()
+    {
+        using var ctx = new TestContext();
+
+        // Prime to load the initial files.
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // Delete PageB.al — only PageA still has LC0020.
+        File.Delete(Path.Combine(ctx.ProjectPath, "PageB.al"));
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(1, root.GetProperty("diagnosticsFound").GetInt32());
+
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetString())).ToArray();
+        Assert.Single(filesChanged);
+        Assert.Contains("PageA.al", filesChanged);
     }
 
     [Fact]

@@ -13,31 +13,22 @@ public sealed class ProjectSessionManager : IDisposable
     }
 
     /// <summary>
-    /// Gets an existing session or loads the project from disk.
+    /// Gets an existing session (refreshing it from disk) or loads the project for the first time.
     /// </summary>
+    // The pre-existing concurrent-first-load race (two first calls both load) is out of scope.
     public async Task<ProjectSession> GetOrLoadProjectAsync(string projectPath, CancellationToken ct = default)
     {
         var normalizedPath = Path.GetFullPath(projectPath);
 
         if (_sessions.TryGetValue(normalizedPath, out var existing))
+        {
+            await existing.RefreshFromDiskAsync(ct);
             return existing;
+        }
 
         var session = await _loader.LoadProjectAsync(normalizedPath, ct);
         _sessions[normalizedPath] = session;
         return session;
-    }
-
-    /// <summary>
-    /// Reloads a project, discarding the cached session.
-    /// </summary>
-    public async Task<ProjectSession> ReloadProjectAsync(string projectPath, CancellationToken ct = default)
-    {
-        var normalizedPath = Path.GetFullPath(projectPath);
-
-        if (_sessions.TryRemove(normalizedPath, out var old))
-            old.Dispose();
-
-        return await GetOrLoadProjectAsync(normalizedPath, ct);
     }
 
     public void Dispose()

@@ -111,6 +111,8 @@ public sealed class CodeFixRunner
             if (matchingAction is null)
                 continue;
 
+            var originalText = (await document.GetTextAsync(ct)).ToString();
+
             // Apply the code action to get the modified document
             var operations = await matchingAction.GetOperationsAsync(ct);
 
@@ -128,6 +130,7 @@ public sealed class CodeFixRunner
 
                     return new CodeFixResult(
                         FilePath: filePath,
+                        OriginalContent: originalText,
                         ModifiedContent: modifiedContent,
                         FixTitle: matchingAction.Title);
                 }
@@ -280,7 +283,7 @@ public sealed class CodeFixRunner
             var originalText = (await originalDocument.GetTextAsync(ct)).ToString();
             var newText = (await changedDocument.GetTextAsync(ct)).ToString();
             if (!string.Equals(originalText, newText, StringComparison.Ordinal))
-                changes.Add(new FixAllFileChange(group.Key, newText));
+                changes.Add(new FixAllFileChange(group.Key, originalText, newText));
         }
 
         // Re-check the changed solution for any remaining occurrences of the rule so

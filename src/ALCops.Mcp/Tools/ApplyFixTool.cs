@@ -9,7 +9,10 @@ namespace ALCops.Mcp.Tools;
 public sealed class ApplyFixTool
 {
     [McpServerTool(Name = "apply_fix", ReadOnly = false, Destructive = false),
-     Description("Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk and returns a summary of what changed. Verify with al_compile (onlyErrors: false).")]
+     Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
+        "Writes the fixed content to the file on disk unless the file changed after the fix was computed, " +
+        "in which case nothing is written and { error: 'StaleFile' } is returned. " +
+        "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFix(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
@@ -38,11 +41,20 @@ public sealed class ApplyFixTool
                     new { error = "NoFixFound", message = $"No code fix with equivalence key '{equivalenceKey}' found for {diagnosticId} at {filePath}:{line}:{column}." },
                     JsonDefaults.Options);
 
-            // Write the fixed content directly to disk
-            await File.WriteAllTextAsync(filePath, result.ModifiedContent, cancellationToken);
+            var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
+                filePath, result.OriginalContent, result.ModifiedContent, cancellationToken);
 
-            // Reload the project session so subsequent calls see the updated file
-            await sessionManager.ReloadProjectAsync(projectPath, cancellationToken);
+            if (conflict is not null)
+            {
+                Console.Error.WriteLine($"Warning: {conflict.Message}");
+                return JsonSerializer.Serialize(new
+                {
+                    error = "StaleFile",
+                    message = $"{conflict.FilePath} changed on disk after the fix was computed; nothing was written. Re-run get_fixes and apply_fix.",
+                    filePath = conflict.FilePath,
+                    diagnosticId
+                }, JsonDefaults.Options);
+            }
 
             return JsonSerializer.Serialize(new
             {

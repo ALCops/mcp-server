@@ -1,0 +1,172 @@
+using ALCops.Mcp.Services;
+using Xunit;
+
+namespace ALCops.Mcp.Tests;
+
+public class ProjectSessionRefreshTests : IDisposable
+{
+    private readonly string _projectPath;
+    private readonly ProjectSessionManager _sessionManager;
+
+    public ProjectSessionRefreshTests()
+    {
+        _projectPath = TestAnalyzers.CopyFixtureWithAnalyzers("FixAllProject", "alcops-refresh-test");
+        _sessionManager = new ProjectSessionManager(new ProjectLoader());
+    }
+
+    public void Dispose()
+    {
+        _sessionManager.Dispose();
+        TestAnalyzers.TryDeleteDirectory(_projectPath);
+    }
+
+    [Fact]
+    public async Task NothingChanged_SummaryAllZero_SameSolution()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var solutionBefore = session.GetProject().Solution;
+        var docIdsBefore = session.FilePathToDocumentId.Values.ToHashSet();
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(0, summary.Updated);
+        Assert.Equal(0, summary.Added);
+        Assert.Equal(0, summary.Removed);
+        Assert.False(summary.Any);
+        Assert.Same(solutionBefore, session.GetProject().Solution);
+        Assert.True(docIdsBefore.SetEquals(session.FilePathToDocumentId.Values));
+    }
+
+    [Fact]
+    public async Task EditFile_UpdatedCountIsOne_NewTextVisible()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var pageBPath = Path.Combine(_projectPath, "PageB.al");
+        var docIdBefore = session.FilePathToDocumentId[Path.GetFullPath(pageBPath)];
+        var pageADocId = session.FilePathToDocumentId[Path.GetFullPath(Path.Combine(_projectPath, "PageA.al"))];
+
+        var content = await File.ReadAllTextAsync(pageBPath);
+        await File.WriteAllTextAsync(pageBPath, content + "\n// edited");
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(1, summary.Updated);
+        Assert.Equal(0, summary.Added);
+        Assert.Equal(0, summary.Removed);
+
+        var doc = session.GetDocument(pageBPath);
+        Assert.NotNull(doc);
+        var text = (await doc!.GetTextAsync()).ToString();
+        Assert.EndsWith("// edited", text);
+
+        // DocumentIds must be preserved for both edited and untouched files.
+        Assert.Equal(docIdBefore, session.FilePathToDocumentId[Path.GetFullPath(pageBPath)]);
+        Assert.Equal(pageADocId, session.FilePathToDocumentId[Path.GetFullPath(Path.Combine(_projectPath, "PageA.al"))]);
+    }
+
+    [Fact]
+    public async Task AddFile_AddedCountIsOne_DocumentAccessible()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var initialCount = session.GetProject().Documents.Count();
+
+        var pageDPath = Path.Combine(_projectPath, "PageD.al");
+        await File.WriteAllTextAsync(pageDPath, """
+            page 50103 PageD
+            {
+                ApplicationArea = All;
+
+                layout
+                {
+                    area(content)
+                    {
+                        field(NewField; NewField)
+                        {
+                        }
+                    }
+                }
+
+                var
+                    NewField: Text;
+            }
+            """);
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(1, summary.Added);
+        Assert.Equal(0, summary.Updated);
+        Assert.Equal(0, summary.Removed);
+        Assert.NotNull(session.GetDocument(pageDPath));
+        Assert.Equal(initialCount + 1, session.GetProject().Documents.Count());
+    }
+
+    [Fact]
+    public async Task DeleteFile_RemovedCountIsOne_CompilationSucceeds()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var pageCPath = Path.Combine(_projectPath, "PageC.al");
+
+        File.Delete(pageCPath);
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(1, summary.Removed);
+        Assert.Equal(0, summary.Updated);
+        Assert.Equal(0, summary.Added);
+        Assert.Null(session.GetDocument(pageCPath));
+
+        var compilation = await session.GetCompilationAsync();
+        Assert.NotNull(compilation);
+    }
+
+    [Fact]
+    public async Task TouchWithoutContentChange_SummaryZero_SameSolution()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var solutionBefore = session.GetProject().Solution;
+        var pageBPath = Path.Combine(_projectPath, "PageB.al");
+
+        File.SetLastWriteTimeUtc(pageBPath, DateTime.UtcNow + TimeSpan.FromMinutes(1));
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(0, summary.Updated);
+        Assert.Equal(0, summary.Added);
+        Assert.Equal(0, summary.Removed);
+        Assert.Same(solutionBefore, session.GetProject().Solution);
+    }
+
+    [Fact]
+    public async Task FileInAlPackages_NotAdded()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var countBefore = session.GetProject().Documents.Count();
+
+        var alPackagesDir = Path.Combine(_projectPath, ".alpackages");
+        Directory.CreateDirectory(alPackagesDir);
+        await File.WriteAllTextAsync(Path.Combine(alPackagesDir, "X.al"), "// should be excluded");
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.Equal(0, summary.Added);
+        Assert.Equal(countBefore, session.GetProject().Documents.Count());
+    }
+
+    [Fact]
+    public async Task ViaSessionManager_EditVisibleOnSecondCall_SameInstance()
+    {
+        var session1 = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+
+        var pageBPath = Path.Combine(_projectPath, "PageB.al");
+        var content = await File.ReadAllTextAsync(pageBPath);
+        await File.WriteAllTextAsync(pageBPath, content + "\n// externally edited");
+
+        var session2 = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+
+        Assert.Same(session1, session2);
+        var doc = session2.GetDocument(pageBPath);
+        Assert.NotNull(doc);
+        var text = (await doc!.GetTextAsync()).ToString();
+        Assert.Contains("// externally edited", text);
+    }
+}
