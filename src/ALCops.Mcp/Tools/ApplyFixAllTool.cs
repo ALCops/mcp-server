@@ -104,17 +104,26 @@ public sealed class ApplyFixAllTool
             {
                 foreach (var change in result.Changes)
                 {
-                    var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
-                        change.FilePath, change.OriginalContent, change.ModifiedContent, cancellationToken);
+                    try
+                    {
+                        var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
+                            change.FilePath, change.OriginalContent, change.ModifiedContent, cancellationToken);
 
-                    if (conflict is not null)
-                    {
-                        Console.Error.WriteLine($"Warning: {conflict.Message}");
-                        conflicts.Add(conflict);
+                        if (conflict is not null)
+                        {
+                            Console.Error.WriteLine($"Warning: {conflict.Message}");
+                            conflicts.Add(conflict);
+                        }
+                        else
+                        {
+                            written.Add(change.FilePath);
+                        }
                     }
-                    else
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
-                        written.Add(change.FilePath);
+                        Console.Error.WriteLine($"Warning: {change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message})");
+                        conflicts.Add(new FileWriteConflict(change.FilePath,
+                            $"{change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message}); the other files were still processed."));
                     }
                 }
             }

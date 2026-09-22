@@ -30,6 +30,7 @@ public sealed class ProjectSession : IDisposable
     public ProjectId ProjectId { get; }
     public string ProjectPath { get; }
     public ImmutableDictionary<string, DocumentId> FilePathToDocumentId => _filePathToDocumentId;
+    internal ImmutableDictionary<string, TrackedDocument> TrackedDocuments => _documents;
 
     internal ProjectSession(
         AlProjectWorkspace workspace,
@@ -87,21 +88,13 @@ public sealed class ProjectSession : IDisposable
             int updated = 0, added = 0, removed = 0;
             var newDocs = _documents.ToBuilder();
 
-            // Tracked but not on disk → remove
+            // Tracked but not on disk → remove (OnDocument* calls are in-memory only)
             foreach (var (path, tracked) in _documents)
             {
                 if (onDisk.Contains(path))
                     continue;
 
-                try
-                {
-                    await Workspace.RemoveDocumentAsync(tracked.Id);
-                }
-                catch (IOException)
-                {
-                    continue;
-                }
-
+                await Workspace.RemoveDocumentAsync(tracked.Id);
                 newDocs.Remove(path);
                 removed++;
             }
@@ -115,7 +108,11 @@ public sealed class ProjectSession : IDisposable
                 {
                     FileInfo fi;
                     try { fi = new FileInfo(path); }
-                    catch (IOException) { continue; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                        continue;
+                    }
 
                     var stamp = FileStamp.Of(fi);
                     if (stamp == tracked.Stamp)
@@ -123,7 +120,11 @@ public sealed class ProjectSession : IDisposable
 
                     string newText;
                     try { newText = await File.ReadAllTextAsync(path, ct); }
-                    catch (IOException) { continue; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                        continue;
+                    }
 
                     var doc = Workspace.CurrentSolution.GetDocument(tracked.Id);
                     if (doc is null)
@@ -145,24 +146,25 @@ public sealed class ProjectSession : IDisposable
                 {
                     FileInfo fi;
                     try { fi = new FileInfo(path); }
-                    catch (IOException) { continue; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
+                        continue;
+                    }
 
                     var stamp = FileStamp.Of(fi);
 
                     string content;
                     try { content = await File.ReadAllTextAsync(path, ct); }
-                    catch (IOException) { continue; }
-
-                    var docInfo = ProjectLoader.CreateDocumentInfo(ProjectId, path, content);
-
-                    try
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
-                        await Workspace.AddDocumentAsync(docInfo);
-                    }
-                    catch (IOException)
-                    {
+                        Console.Error.WriteLine($"Warning: could not read {path} during refresh ({ex.GetType().Name}); skipped this round.");
                         continue;
                     }
+
+                    // OnDocument* calls are in-memory only
+                    var docInfo = ProjectLoader.CreateDocumentInfo(ProjectId, path, content);
+                    await Workspace.AddDocumentAsync(docInfo);
 
                     newDocs[path] = new TrackedDocument(docInfo.Id, stamp);
                     added++;
@@ -170,11 +172,13 @@ public sealed class ProjectSession : IDisposable
             }
 
             var summary = new RefreshSummary(updated, added, removed);
+            _documents = newDocs.ToImmutable();
 
             if (summary.Any)
             {
-                _documents = newDocs.ToImmutable();
-                _filePathToDocumentId = BuildDocumentIdMap(_documents);
+                if (added + removed > 0)
+                    _filePathToDocumentId = BuildDocumentIdMap(_documents);
+
                 Console.Error.WriteLine(
                     $"Refreshed {ProjectPath}: {updated} updated, {added} added, {removed} removed .al file(s).");
             }

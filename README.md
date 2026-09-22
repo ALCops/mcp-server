@@ -71,7 +71,7 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 
 After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile` with `options.onlyErrors: false` to confirm the diagnostic is gone. Both await almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second call may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
 
-**Editing between calls:** The native tools re-read `.al` files that changed on disk before every call (only changed files are re-parsed), so you can edit files between `get_fixes` and `apply_fix`, and neither tool will overwrite a file that no longer matches the text its fix was computed from.
+**Editing between calls:** `get_fixes`, `apply_fix` and `apply_fix_all` re-read `.al` files that changed on disk before every call (only changed files are re-parsed), so you can edit files between `get_fixes` and `apply_fix`, and neither tool will overwrite a file that no longer matches the text its fix was computed from.
 
 ## Analyzers
 

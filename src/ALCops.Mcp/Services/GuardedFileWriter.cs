@@ -13,7 +13,7 @@ internal static class GuardedFileWriter
         {
             currentContent = await File.ReadAllTextAsync(filePath, ct);
         }
-        catch (FileNotFoundException)
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return new FileWriteConflict(filePath,
                 $"{filePath} was deleted after the fix was computed; nothing was written.");

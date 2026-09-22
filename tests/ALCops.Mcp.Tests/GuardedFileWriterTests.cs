@@ -55,4 +55,17 @@ public class GuardedFileWriterTests : IDisposable
         Assert.Equal(path, conflict!.FilePath);
         Assert.Contains("deleted", conflict.Message);
     }
+
+    [Fact]
+    public async Task MissingParentDirectory_ReturnsConflict()
+    {
+        var path = Path.Combine(_tempDir, "gone", "sub", "test.al");
+
+        var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
+            path, "original content", "new content", CancellationToken.None);
+
+        Assert.NotNull(conflict);
+        Assert.Equal(path, conflict!.FilePath);
+        Assert.Contains("deleted", conflict.Message);
+    }
 }

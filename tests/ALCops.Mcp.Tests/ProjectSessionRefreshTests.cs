@@ -137,6 +137,25 @@ public class ProjectSessionRefreshTests : IDisposable
     }
 
     [Fact]
+    public async Task TouchWithoutContentChange_StampConverges()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var pageBPath = Path.GetFullPath(Path.Combine(_projectPath, "PageB.al"));
+
+        var newTime = DateTime.UtcNow + TimeSpan.FromMinutes(5);
+        File.SetLastWriteTimeUtc(pageBPath, newTime);
+        var expectedStamp = FileStamp.Of(new FileInfo(pageBPath));
+
+        var summary1 = await session.RefreshFromDiskAsync();
+
+        Assert.False(summary1.Any);
+        Assert.Equal(expectedStamp, session.TrackedDocuments[pageBPath].Stamp);
+
+        var summary2 = await session.RefreshFromDiskAsync();
+        Assert.False(summary2.Any);
+    }
+
+    [Fact]
     public async Task FileInAlPackages_NotAdded()
     {
         var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
