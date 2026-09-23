@@ -214,8 +214,11 @@ public class ProjectSessionRefreshTests : IDisposable
     }
 
     [Fact]
-    public async Task CancelledToken_ThrowsAndLeavesStateConsistent()
+    public async Task PreCancelledToken_ThrowsBeforeMutating_NextRefreshPicksUpEverything()
     {
+        // An already-cancelled token is rejected by the gate before any workspace mutation, so
+        // this covers the no-op path only. Mid-pass cancellation has no deterministic hook; its
+        // consistency comes from committing the bookkeeping in the finally block.
         var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
         var initialCount = session.GetProject().Documents.Count();
 

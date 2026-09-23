@@ -164,8 +164,13 @@ public sealed class ApplyFixAllTool
         var conflictPaths = new HashSet<string>(
             conflicts.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
 
-        return [.. result.Unfixed, .. result.Changes
-            .Where(c => conflictPaths.Contains(c.FilePath))
-            .SelectMany(c => c.Diagnostics)];
+        // A conflict file's original diagnostics may overlap with Unfixed (e.g. one the iterative
+        // fallback could not fix), so dedupe on the record's value equality.
+        return result.Unfixed
+            .Concat(result.Changes
+                .Where(c => conflictPaths.Contains(c.FilePath))
+                .SelectMany(c => c.Diagnostics))
+            .Distinct()
+            .ToList();
     }
 }

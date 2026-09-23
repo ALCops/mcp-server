@@ -340,6 +340,26 @@ public class ApplyFixAllToolTests
     }
 
     [Fact]
+    public void MergeUnfixed_ConflictFileDiagnosticAlreadyUnfixed_IsListedOnce()
+    {
+        // A diagnostic the fix-all pass could not fix is already in Unfixed; when its file is also
+        // skipped as a conflict, the merge must not list it twice.
+        var unfixable = new FixAllUnfixedDiagnostic("FileB.al", 10, 1);
+        var fixable = new FixAllUnfixedDiagnostic("FileB.al", 20, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 2, "Fix", "key",
+            [new FixAllFileChange("FileB.al", "old", "new", [unfixable, fixable])],
+            [], [unfixable]);
+
+        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(unfixable, merged);
+        Assert.Contains(fixable, merged);
+    }
+
+    [Fact]
     public void MergeUnfixed_CaseInsensitivePathMatch()
     {
         var fileBDiag = new FixAllUnfixedDiagnostic("C:\\Src\\FileB.al", 10, 1);
