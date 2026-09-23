@@ -14,7 +14,9 @@ public sealed class ApplyFixAllTool
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
-        "Verify with al_compile (onlyErrors: false).")]
+        "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
+        "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
+        "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
@@ -95,25 +97,55 @@ public sealed class ApplyFixAllTool
             }
 
             // Completed
+            var written = new List<string>();
+            var conflicts = new List<FileWriteConflict>();
+
             if (!dryRun)
             {
                 foreach (var change in result.Changes)
-                    await File.WriteAllTextAsync(change.FilePath, change.ModifiedContent, cancellationToken);
+                {
+                    try
+                    {
+                        var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
+                            change.FilePath, change.OriginalContent, change.ModifiedContent, cancellationToken);
 
-                if (result.Changes.Count > 0)
-                    await sessionManager.ReloadProjectAsync(projectPath, cancellationToken);
+                        if (conflict is not null)
+                        {
+                            Console.Error.WriteLine($"Warning: {conflict.Message}");
+                            conflicts.Add(conflict);
+                        }
+                        else
+                        {
+                            written.Add(change.FilePath);
+                        }
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Console.Error.WriteLine($"Warning: {change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message})");
+                        conflicts.Add(new FileWriteConflict(change.FilePath,
+                            $"{change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message}); the other files were still processed."));
+                    }
+                }
             }
+
+            string? conflictMessage = conflicts.Count > 0
+                ? $"{conflicts.Count} file(s) were skipped because they changed on disk while the fix was being computed; their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them."
+                : null;
+
+            var unfixed = MergeUnfixed(result, conflicts);
 
             return JsonSerializer.Serialize(new
             {
-                applied = !dryRun && result.Changes.Count > 0,
+                applied = !dryRun && written.Count > 0,
                 dryRun,
                 diagnosticId,
                 fixTitle = result.FixTitle,
                 equivalenceKey = result.EquivalenceKey,
                 diagnosticsFound = result.DiagnosticsFound,
-                filesChanged = result.Changes.Select(c => c.FilePath).ToArray(),
-                unfixedDiagnostics = result.Unfixed,
+                filesChanged = dryRun ? result.Changes.Select(c => c.FilePath).ToArray() : written.ToArray(),
+                conflicts,
+                message = conflictMessage,
+                unfixedDiagnostics = unfixed,
                 warning
             }, JsonDefaults.Options);
         }
@@ -121,5 +153,24 @@ public sealed class ApplyFixAllTool
         {
             return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
         }
+    }
+
+    internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixed(
+        FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts)
+    {
+        if (conflicts.Count == 0)
+            return result.Unfixed;
+
+        var conflictPaths = new HashSet<string>(
+            conflicts.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
+
+        // A conflict file's original diagnostics may overlap with Unfixed (e.g. one the iterative
+        // fallback could not fix), so dedupe on the record's value equality.
+        return result.Unfixed
+            .Concat(result.Changes
+                .Where(c => conflictPaths.Contains(c.FilePath))
+                .SelectMany(c => c.Diagnostics))
+            .Distinct()
+            .ToList();
     }
 }

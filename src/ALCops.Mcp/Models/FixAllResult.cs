@@ -14,7 +14,7 @@ public enum FixAllStatus
 }
 
 /// <summary>One file whose content changed (or would change, if dryRun) as a result of the fix-all pass.</summary>
-public record FixAllFileChange(string FilePath, string ModifiedContent);
+public record FixAllFileChange(string FilePath, string OriginalContent, string ModifiedContent, IReadOnlyList<FixAllUnfixedDiagnostic> Diagnostics);
 
 /// <summary>A diagnostic matching the requested rule that no available fix could resolve.</summary>
 public record FixAllUnfixedDiagnostic(string FilePath, int Line, int Column);

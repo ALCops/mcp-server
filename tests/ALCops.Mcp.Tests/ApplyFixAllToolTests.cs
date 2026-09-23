@@ -1,6 +1,8 @@
 using System.Text.Json;
+using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
+using Microsoft.Dynamics.Nav.CodeAnalysis.CodeFixes;
 using Xunit;
 
 namespace ALCops.Mcp.Tests;
@@ -53,6 +55,7 @@ public class ApplyFixAllToolTests
 
         Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(2, root.GetProperty("diagnosticsFound").GetInt32());
+        Assert.Empty(root.GetProperty("conflicts").EnumerateArray());
 
         var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
             .Select(e => Path.GetFileName(e.GetString())).ToArray();
@@ -167,6 +170,95 @@ public class ApplyFixAllToolTests
     }
 
     [Fact]
+    public async Task ApplyFixAll_ExternalEditBetweenCalls_PreservesExternalEdit()
+    {
+        using var ctx = new TestContext();
+
+        // Prime the session (loads all files into the workspace cache).
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // External edit: rename OtherField → RenamedField in PageB.al.
+        // The page is still valid and LC0020 still fires on the field-level ApplicationArea.
+        var pageBPath = Path.Combine(ctx.ProjectPath, "PageB.al");
+        var pageBContent = ctx.ReadFile("PageB.al");
+        await File.WriteAllTextAsync(pageBPath, pageBContent.Replace("OtherField", "RenamedField"));
+
+        // Apply for real — the refresh must pick up the rename.
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+
+        // PageB must still contain the externally-renamed field AND have exactly one ApplicationArea.
+        var pageBFinal = ctx.ReadFile("PageB.al");
+        Assert.Contains("RenamedField", pageBFinal);
+        Assert.Equal(1, CountOccurrences(pageBFinal, "ApplicationArea = All;"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_FileAddedAfterLoad_FixesNewFile()
+    {
+        using var ctx = new TestContext();
+
+        // Prime to load the initial files.
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // Add a new file with LC0020-triggering content.
+        var pageDContent = ctx.ReadFile("PageB.al")
+            .Replace("50101", "50103")
+            .Replace("PageB", "PageD");
+        await File.WriteAllTextAsync(Path.Combine(ctx.ProjectPath, "PageD.al"), pageDContent);
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
+
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetString())).ToArray();
+        Assert.Contains("PageD.al", filesChanged);
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_FileDeletedAfterLoad_FixesRemainingFiles()
+    {
+        using var ctx = new TestContext();
+
+        // Prime to load the initial files.
+        await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020", dryRun: true);
+
+        // Delete PageB.al — only PageA still has LC0020.
+        File.Delete(Path.Combine(ctx.ProjectPath, "PageB.al"));
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(1, root.GetProperty("diagnosticsFound").GetInt32());
+
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetString())).ToArray();
+        Assert.Single(filesChanged);
+        Assert.Contains("PageA.al", filesChanged);
+    }
+
+    [Fact]
     public async Task ApplyFixAll_RulesetSuppressesRule_TreatsItAsZeroDiagnostics()
     {
         // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None",
@@ -185,5 +277,101 @@ public class ApplyFixAllToolTests
         Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
         Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_Changes_CarryDiagnosticLocations()
+    {
+        using var ctx = new TestContext();
+        var session = await ctx.SessionManager.GetOrLoadProjectAsync(ctx.ProjectPath);
+        var analyzerSet = await ctx.AnalyzerResolver.ResolveAsync(ctx.ProjectPath, null);
+
+        var result = await ctx.CodeFixRunner.ApplyFixAllAsync(
+            session, "LC0020", FixAllScope.Project, null, null, analyzerSet);
+
+        Assert.Equal(FixAllStatus.Completed, result.Status);
+        Assert.Equal(2, result.Changes.Count);
+
+        var pageAChange = result.Changes.Single(c => Path.GetFileName(c.FilePath) == "PageA.al");
+        Assert.Single(pageAChange.Diagnostics);
+        Assert.Equal(11, pageAChange.Diagnostics[0].Line);
+
+        var pageBChange = result.Changes.Single(c => Path.GetFileName(c.FilePath) == "PageB.al");
+        Assert.Single(pageBChange.Diagnostics);
+        Assert.Equal(11, pageBChange.Diagnostics[0].Line);
+    }
+
+    [Fact]
+    public void MergeUnfixed_NoConflicts_ReturnsIdenticalList()
+    {
+        var unfixed = new List<FixAllUnfixedDiagnostic>
+        {
+            new("FileA.al", 5, 1)
+        };
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 2, "Fix", "key",
+            [new FixAllFileChange("FileB.al", "old", "new", [new("FileB.al", 10, 1)])],
+            [], unfixed);
+
+        var merged = ApplyFixAllTool.MergeUnfixed(result, []);
+
+        Assert.Same(result.Unfixed, merged);
+    }
+
+    [Fact]
+    public void MergeUnfixed_WithConflict_AppendsDiagnosticsFromConflictedFile()
+    {
+        var unfixed = new List<FixAllUnfixedDiagnostic> { new("FileA.al", 5, 1) };
+        var fileBDiag = new FixAllUnfixedDiagnostic("FileB.al", 10, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 3, "Fix", "key",
+            [
+                new FixAllFileChange("FileA.al", "old", "new", [new("FileA.al", 3, 1)]),
+                new FixAllFileChange("FileB.al", "old", "new", [fileBDiag]),
+            ],
+            [], unfixed);
+
+        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Equal(unfixed[0], merged[0]);
+        Assert.Equal(fileBDiag, merged[1]);
+    }
+
+    [Fact]
+    public void MergeUnfixed_ConflictFileDiagnosticAlreadyUnfixed_IsListedOnce()
+    {
+        // A diagnostic the fix-all pass could not fix is already in Unfixed; when its file is also
+        // skipped as a conflict, the merge must not list it twice.
+        var unfixable = new FixAllUnfixedDiagnostic("FileB.al", 10, 1);
+        var fixable = new FixAllUnfixedDiagnostic("FileB.al", 20, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 2, "Fix", "key",
+            [new FixAllFileChange("FileB.al", "old", "new", [unfixable, fixable])],
+            [], [unfixable]);
+
+        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(unfixable, merged);
+        Assert.Contains(fixable, merged);
+    }
+
+    [Fact]
+    public void MergeUnfixed_CaseInsensitivePathMatch()
+    {
+        var fileBDiag = new FixAllUnfixedDiagnostic("C:\\Src\\FileB.al", 10, 1);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 1, "Fix", "key",
+            [new FixAllFileChange("C:\\Src\\FileB.al", "old", "new", [fileBDiag])],
+            [], []);
+
+        var conflicts = new List<FileWriteConflict> { new("c:\\src\\fileb.al", "conflict") };
+        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+
+        Assert.Single(merged);
+        Assert.Equal(fileBDiag, merged[0]);
     }
 }

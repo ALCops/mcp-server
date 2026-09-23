@@ -60,6 +60,63 @@ public class ApplyFixToolTests
     }
 
     [Fact]
+    public async Task ApplyFix_ExternalEditBetweenCalls_PreservesEditAndAppliesFix()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-stale-applyfix-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var codeFixRunner = new CodeFixRunner();
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            // Prime — loads the session and discovers the diagnostic.
+            var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
+            var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
+
+            const int line = 11, column = 17;
+            var fixes = await codeFixRunner.GetFixesAsync(
+                session, filePath, "LC0020", line, column, analyzerSet);
+            Assert.True(fixes.Count > 0, "Expected a fixable LC0020.");
+
+            // External edit: append a comment as the final line. Line 11 stays valid.
+            var content = await File.ReadAllTextAsync(filePath);
+            await File.WriteAllTextAsync(filePath, content + "\n// edited");
+
+            // Apply — the refresh must pick up the appended line, and the guarded write must
+            // succeed because the fix was computed from the refreshed content.
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, codeFixRunner, analyzerResolver,
+                tempProjectPath, filePath, "LC0020", line, column,
+                fixes[0].EquivalenceKey);
+
+            Assert.Contains("\"applied\":true", result);
+
+            var finalContent = await File.ReadAllTextAsync(filePath);
+            Assert.Contains("// edited", finalContent);
+            Assert.Equal(1, CountOccurrences(finalContent, "ApplicationArea = All;"));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) != -1)
+        {
+            count++;
+            index += value.Length;
+        }
+        return count;
+    }
+
+    [Fact]
     public async Task GetFixes_RulesetSuppressesRule_ReturnsNoFixes()
     {
         // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None". Even though

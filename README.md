@@ -53,8 +53,8 @@ The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work 
 |------|-------------|
 | `list_rules` | List analyzer rules with metadata (ID, title, severity, category, cop). |
 | `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
-| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content directly to the file on disk. |
-| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. |
+| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content to disk unless the file changed after the fix was computed (`StaleFile`). |
+| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. Files that changed on disk mid-operation are skipped and listed in `conflicts`. |
 | `analyze` | Compile with all configured analyzers and return structured cop + compiler diagnostics (analyzer, hasFix, filters, summary). Wraps `al_compile` with `onlyErrors: false`; needs `almcp`. |
 
 ### Proxied from Microsoft's `almcp`
@@ -70,6 +70,8 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 ### Verifying a fix
 
 After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile` with `options.onlyErrors: false` to confirm the diagnostic is gone. Both await almcp's internal file watcher, which normally sees the write before the compile starts. The watcher gate is not debounced, so on slow file systems or right after a large `apply_fix_all` a second call may be needed. Do **not** use `al_getdiagnostics` for this: it returns cached compilation results rather than re-analyzing, and will report stale (or empty) diagnostics. `al_build` does not await the watcher. Only restarting the server gives a fully fresh almcp workspace.
+
+**Editing between calls:** `get_fixes`, `apply_fix` and `apply_fix_all` re-read `.al` files that changed on disk before every call (only changed files are re-parsed), so you can edit files between `get_fixes` and `apply_fix`, and neither tool will overwrite a file that no longer matches the text its fix was computed from.
 
 ## Analyzers
 

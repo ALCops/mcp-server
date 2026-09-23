@@ -14,6 +14,20 @@ public sealed class ProjectLoader
         PropertyNameCaseInsensitive = true
     };
 
+    internal static string[] EnumerateAlFiles(string projectPath) =>
+        Directory.GetFiles(projectPath, "*.al", SearchOption.AllDirectories)
+            .Where(f => !f.Contains(".alpackages"))
+            .Select(Path.GetFullPath)
+            .ToArray();
+
+    internal static DocumentInfo CreateDocumentInfo(ProjectId projectId, string normalizedPath, string content)
+    {
+        var docId = DocumentId.CreateNewId(projectId, Path.GetFileName(normalizedPath));
+        var sourceText = SourceText.From(content);
+        var loader = TextLoader.From(TextAndVersion.Create(sourceText, VersionStamp.Create(), normalizedPath));
+        return DocumentInfo.Create(docId, Path.GetFileName(normalizedPath), loader: loader, filePath: normalizedPath);
+    }
+
     /// <summary>
     /// Loads an AL project from disk into a workspace with full compilation support.
     /// </summary>
@@ -29,9 +43,7 @@ public sealed class ProjectLoader
         var appJson = await LoadAppJsonAsync(appJsonPath, ct);
 
         // 2. Enumerate .al files
-        var alFiles = Directory.GetFiles(projectPath, "*.al", SearchOption.AllDirectories)
-            .Where(f => !f.Contains(".alpackages"))
-            .ToArray();
+        var alFiles = EnumerateAlFiles(projectPath);
 
         if (alFiles.Length == 0)
             throw new InvalidOperationException($"No .al files found in {projectPath}");
@@ -41,26 +53,20 @@ public sealed class ProjectLoader
         var projectId = ProjectId.CreateNewId(appJson.Name);
 
         // 4. Build document infos from .al files
-        var filePathToDocId = ImmutableDictionary.CreateBuilder<string, DocumentId>(StringComparer.OrdinalIgnoreCase);
+        var documents = ImmutableDictionary.CreateBuilder<string, TrackedDocument>(StringComparer.OrdinalIgnoreCase);
         var documentInfos = new List<DocumentInfo>();
 
         foreach (var alFile in alFiles)
         {
             var normalizedPath = Path.GetFullPath(alFile);
+
+            // Stamp BEFORE reading so a write landing between stamp and read is seen as newer on the next refresh.
+            var stamp = FileStamp.Of(new FileInfo(normalizedPath));
             var content = await File.ReadAllTextAsync(alFile, ct);
-            var docId = DocumentId.CreateNewId(projectId, Path.GetFileName(alFile));
 
-            var sourceText = SourceText.From(content);
-            var loader = TextLoader.From(TextAndVersion.Create(sourceText, VersionStamp.Create(), normalizedPath));
-
-            var docInfo = DocumentInfo.Create(
-                docId,
-                Path.GetFileName(alFile),
-                loader: loader,
-                filePath: normalizedPath);
-
+            var docInfo = CreateDocumentInfo(projectId, normalizedPath, content);
             documentInfos.Add(docInfo);
-            filePathToDocId[normalizedPath] = docId;
+            documents[normalizedPath] = new TrackedDocument(docInfo.Id, stamp);
         }
 
         // 5. Resolve package cache paths. Honour al.packageCachePath like the AL extension does —
@@ -96,7 +102,7 @@ public sealed class ProjectLoader
         // 7. Add project to workspace
         workspace.AddProject(projectInfo);
 
-        return new ProjectSession(workspace, projectId, projectPath, filePathToDocId.ToImmutable());
+        return new ProjectSession(workspace, projectId, projectPath, documents.ToImmutable());
     }
 
     private static async Task<AppJsonModel> LoadAppJsonAsync(string path, CancellationToken ct)

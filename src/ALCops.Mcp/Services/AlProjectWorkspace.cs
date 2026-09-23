@@ -1,3 +1,4 @@
+using Microsoft.Dynamics.Nav.CodeAnalysis.Text;
 using Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces;
 using Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.Host;
 
@@ -27,19 +28,10 @@ internal sealed class AlProjectWorkspace : Workspace
         return CurrentSolution.GetProject(projectInfo.Id)!;
     }
 
-    /// <summary>
-    /// Adds a document to an existing project and returns the resulting Document object.
-    /// </summary>
-    public Document AddDocument(DocumentInfo documentInfo)
-    {
-        var newSolution = CurrentSolution.AddDocument(documentInfo);
-        if (!TryApplyChanges(newSolution))
-            throw new InvalidOperationException("Failed to add document to workspace.");
-        return CurrentSolution.GetDocument(documentInfo.Id)!;
-    }
+    public Task AddDocumentAsync(DocumentInfo info) => OnDocumentAdded(info);
 
-    /// <summary>
-    /// Replaces the current solution with an updated one (e.g., after applying a code fix).
-    /// </summary>
-    public bool ApplyChanges(Solution newSolution) => TryApplyChanges(newSolution);
+    public Task RemoveDocumentAsync(DocumentId id) => OnDocumentRemoved(id);
+
+    public Task UpdateDocumentTextAsync(DocumentId id, SourceText text) =>
+        OnDocumentTextChanged(id, text, PreservationMode.PreserveValue);
 }

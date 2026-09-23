@@ -104,6 +104,30 @@ public class ProjectLoaderTests
     }
 
     [Fact]
+    public void EnumerateAlFiles_ExcludesAlPackages_ReturnsFullPaths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "Page.al"), "// page");
+            var alPackages = Path.Combine(root, ".alpackages");
+            Directory.CreateDirectory(alPackages);
+            File.WriteAllText(Path.Combine(alPackages, "Dep.al"), "// dependency");
+
+            var files = ProjectLoader.EnumerateAlFiles(root);
+
+            Assert.Single(files);
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "Page.al")), files[0]);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task LoadProjectAsync_WithNoAlFiles_ThrowsInvalidOperationException()
     {
         var loader = CreateLoader();
