@@ -13,7 +13,7 @@ public sealed class ApplyFixTool
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
         "Writes the fixed content to the file on disk unless the file changed after the fix was computed, " +
         "in which case nothing is written and { error: 'StaleFile' } is returned. " +
-        "A file without a byte-order mark that is not valid UTF-8 (e.g. Windows-1252) is never re-encoded: " +
+        "A file that is not valid in its detected encoding (e.g. a Windows-1252 file read as UTF-8) is never re-encoded: " +
         "nothing is written and { error: 'UnsupportedEncoding' } is returned ({ error: 'ReadFailed' } if the file cannot be read). " +
         "The write is atomic and preserves the file's encoding and line endings. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
@@ -55,9 +55,7 @@ public sealed class ApplyFixTool
                 return JsonSerializer.Serialize(new
                 {
                     error = conflict.Kind,
-                    message = conflict.Kind == FileWriteConflictKind.StaleFile
-                        ? $"{conflict.Message} Re-run get_fixes and apply_fix."
-                        : conflict.Message,
+                    message = conflict.Message,
                     filePath = conflict.FilePath,
                     diagnosticId
                 }, JsonDefaults.Options);

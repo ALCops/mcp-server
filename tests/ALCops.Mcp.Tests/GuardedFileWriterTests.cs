@@ -46,6 +46,7 @@ public class GuardedFileWriterTests : IDisposable
         Assert.NotNull(conflict);
         Assert.Equal(path, conflict!.FilePath);
         Assert.Contains("changed on disk", conflict.Message);
+        Assert.EndsWith("Re-run get_fixes and apply_fix.", conflict.Message);
         Assert.Equal(FileWriteConflictKind.StaleFile, conflict.Kind);
         Assert.Equal("someone else's edit", await File.ReadAllTextAsync(path));
     }
@@ -61,6 +62,7 @@ public class GuardedFileWriterTests : IDisposable
         Assert.NotNull(conflict);
         Assert.Equal(path, conflict!.FilePath);
         Assert.Contains("deleted", conflict.Message);
+        Assert.DoesNotContain("Re-run", conflict.Message);
     }
 
     [Fact]
@@ -484,6 +486,58 @@ public class GuardedFileWriterTests : IDisposable
         Assert.Equal(
             [FileWriteConflictKind.RolledBack, FileWriteConflictKind.WriteFailed, FileWriteConflictKind.NotWritten],
             result.RolledBack.Select(r => r.Kind));
+    }
+
+    // --- Review round 3: any commit exception rolls back, unencodable fixed text --------------
+
+    [Fact]
+    public async Task Batch_NonIoExceptionOnSecondCommit_RollsBackFirst_ReturnsResult()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+        var calls = 0;
+        var writer = new GuardedFileWriter((temp, target) =>
+        {
+            if (Interlocked.Increment(ref calls) == 2)
+                throw new NotSupportedException("injected non-I/O failure");
+            File.Move(temp, target, overwrite: true);
+        });
+
+        var result = await writer.WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "b", "B"), Write(c, "c", "C")], CancellationToken.None);
+
+        Assert.Empty(result.Written);
+        Assert.Equal(3, result.RolledBack.Count);
+        Assert.Equal(
+            [FileWriteConflictKind.RolledBack, FileWriteConflictKind.WriteFailed, FileWriteConflictKind.NotWritten],
+            result.RolledBack.Select(r => r.Kind));
+        Assert.NotNull(result.FailureMessage);
+        Assert.Contains("NotSupportedException", result.FailureMessage);
+        Assert.Equal("a", await File.ReadAllTextAsync(a));
+        Assert.Equal("b", await File.ReadAllTextAsync(b));
+        Assert.Equal("c", await File.ReadAllTextAsync(c));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public async Task Batch_UnencodableFixedText_SkippedAsUnsupportedEncoding_OthersWritten()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+
+        // A lone high surrogate cannot be encoded by the strict UTF-8 encoder.
+        var result = await _writer.WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "b", "B\uD800"), Write(c, "c", "C")], CancellationToken.None);
+
+        Assert.Equal([a, c], result.Written);
+        var conflict = Assert.Single(result.StaleConflicts);
+        Assert.Equal(b, conflict.FilePath);
+        Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict.Kind);
+        Assert.Contains("cannot be encoded as UTF-8", conflict.Message);
+        Assert.Empty(result.RolledBack);
+        Assert.Null(result.FailureMessage);
+        Assert.Equal("A", await File.ReadAllTextAsync(a));
+        Assert.Equal("b", await File.ReadAllTextAsync(b));
+        Assert.Equal("C", await File.ReadAllTextAsync(c));
+        Assert.Empty(TempFiles());
     }
 
     private async Task<(string A, string B, string C)> CreateThreeFiles()

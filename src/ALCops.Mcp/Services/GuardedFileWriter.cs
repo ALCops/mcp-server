@@ -72,12 +72,13 @@ public sealed class GuardedFileWriter
     }
 
     /// <summary>
-    /// Writes a batch in two phases. Phase 1 reads every file; changed, deleted, unreadable or invalidly encoded ones drop out as
+    /// Writes a batch in two phases. Phase 1 reads every file; changed, deleted, unreadable or invalidly encoded ones (or ones whose fixed text cannot be encoded) drop out as
     /// <see cref="BatchWriteResult.StaleConflicts"/> and the rest proceed. Phase 2 commits them one
     /// by one; if a commit fails, every file already committed in this call is restored to its
     /// original bytes (unless it was modified after this call wrote it) and the staged set is reported in
     /// <see cref="BatchWriteResult.RolledBack"/>.
-    /// A cancellation during phase 2 rolls back the same way and then rethrows.
+    /// Any exception during phase 2 triggers the rollback; a cancellation then rethrows, anything else
+    /// is reported as the failing file's <c>WriteFailed</c> entry.
     /// </summary>
     public async Task<BatchWriteResult> WriteAllIfUnchangedAsync(IReadOnlyList<PendingWrite> writes, CancellationToken ct)
     {
@@ -101,8 +102,9 @@ public sealed class GuardedFileWriter
                 await CommitAsync(s.FilePath, s.NewBytes, ct);
                 committed.Add(s);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
+            catch (Exception ex)
             {
+                // Any exception, not just I/O ones: earlier files are already committed and must be restored.
                 var result = await RollBackAsync(staged, committed, s, ex, staleConflicts);
                 if (ex is OperationCanceledException)
                     throw;
@@ -222,10 +224,22 @@ public sealed class GuardedFileWriter
 
         if (!string.Equals(current, write.ExpectedOriginal, StringComparison.Ordinal))
             return (null, new FileWriteConflict(write.FilePath,
-                $"{write.FilePath} changed on disk after the fix was computed; not overwritten."));
+                $"{write.FilePath} changed on disk after the fix was computed; not overwritten. Re-run get_fixes and apply_fix."));
 
         // Encoded here, in phase 1, so nothing can fail on encoding once commits have started.
-        return (new Staged(write.FilePath, bytes, Encode(write.NewContent, encoding)), null);
+        byte[] newBytes;
+        try
+        {
+            newBytes = Encode(write.NewContent, encoding);
+        }
+        catch (EncoderFallbackException)
+        {
+            return (null, new FileWriteConflict(write.FilePath,
+                $"{write.FilePath}: the fixed text contains characters that cannot be encoded as {DisplayName(encoding)}; not overwritten.",
+                FileWriteConflictKind.UnsupportedEncoding));
+        }
+
+        return (new Staged(write.FilePath, bytes, newBytes), null);
     }
 
     private async Task CommitAsync(string filePath, byte[] bytes, CancellationToken ct)
