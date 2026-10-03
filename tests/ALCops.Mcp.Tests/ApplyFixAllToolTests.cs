@@ -19,6 +19,7 @@ public class ApplyFixAllToolTests
         public ProjectSessionManager SessionManager { get; }
         public CodeFixRunner CodeFixRunner { get; }
         public ProjectAnalyzerResolver AnalyzerResolver { get; }
+        public GuardedFileWriter Writer { get; set; } = new();
 
         public TestContext(string fixtureName = "FixAllProject")
         {
@@ -47,7 +48,7 @@ public class ApplyFixAllToolTests
         using var ctx = new TestContext();
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -90,7 +91,7 @@ public class ApplyFixAllToolTests
         var pageAPath = Path.Combine(ctx.ProjectPath, "PageA.al");
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageAPath);
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -116,7 +117,7 @@ public class ApplyFixAllToolTests
         var originalPageB = ctx.ReadFile("PageB.al");
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", dryRun: true);
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -138,7 +139,7 @@ public class ApplyFixAllToolTests
         using var ctx = new TestContext();
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "AC0012");
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -159,7 +160,7 @@ public class ApplyFixAllToolTests
         var pageCPath = Path.Combine(ctx.ProjectPath, "PageC.al");
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageCPath);
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -176,7 +177,7 @@ public class ApplyFixAllToolTests
 
         // Prime the session (loads all files into the workspace cache).
         await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", dryRun: true);
 
         // External edit: rename OtherField → RenamedField in PageB.al.
@@ -187,7 +188,7 @@ public class ApplyFixAllToolTests
 
         // Apply for real — the refresh must pick up the rename.
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -207,7 +208,7 @@ public class ApplyFixAllToolTests
 
         // Prime to load the initial files.
         await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", dryRun: true);
 
         // Add a new file with LC0020-triggering content.
@@ -217,7 +218,7 @@ public class ApplyFixAllToolTests
         await File.WriteAllTextAsync(Path.Combine(ctx.ProjectPath, "PageD.al"), pageDContent);
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -237,14 +238,14 @@ public class ApplyFixAllToolTests
 
         // Prime to load the initial files.
         await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", dryRun: true);
 
         // Delete PageB.al — only PageA still has LC0020.
         File.Delete(Path.Combine(ctx.ProjectPath, "PageB.al"));
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -268,7 +269,7 @@ public class ApplyFixAllToolTests
         var originalPageA = ctx.ReadFile("PageA.al");
 
         var resultJson = await ApplyFixAllTool.ApplyFixAll(
-            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver,
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageAPath);
 
         using var doc = JsonDocument.Parse(resultJson);
@@ -300,6 +301,101 @@ public class ApplyFixAllToolTests
         Assert.Single(pageBChange.Diagnostics);
         Assert.Equal(11, pageBChange.Diagnostics[0].Line);
     }
+
+    [Fact]
+    public async Task ApplyFixAll_MixedEncodings_EachFileKeepsItsOwn()
+    {
+        using var ctx = new TestContext();
+
+        // The BOM is added at test time; a committed fixture with a BOM could be mangled by git.
+        var pageBPath = Path.Combine(ctx.ProjectPath, "PageB.al");
+        await File.WriteAllBytesAsync(pageBPath, [0xEF, 0xBB, 0xBF, .. await File.ReadAllBytesAsync(pageBPath)]);
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        Assert.True(doc.RootElement.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(2, doc.RootElement.GetProperty("filesChanged").GetArrayLength());
+
+        var pageB = await File.ReadAllBytesAsync(pageBPath);
+        Assert.Equal([0xEF, 0xBB, 0xBF], pageB.Take(3));
+        Assert.NotEqual(0xEF, pageB[3]); // exactly one BOM
+
+        var pageA = await File.ReadAllBytesAsync(Path.Combine(ctx.ProjectPath, "PageA.al"));
+        Assert.NotEqual(0xEF, pageA[0]); // a bare file gains no BOM
+
+        Assert.Equal(1, CountOccurrences(ctx.ReadFile("PageA.al"), "ApplicationArea = All;"));
+        Assert.Equal(1, CountOccurrences(ctx.ReadFile("PageB.al"), "ApplicationArea = All;"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_SecondCommitFails_RollsBackAndReportsAllThree()
+    {
+        using var ctx = new TestContext();
+
+        // A third file with LC0020, so the failing commit sits between a committed and a pending file.
+        var pageDContent = ctx.ReadFile("PageB.al").Replace("50101", "50103").Replace("PageB", "PageD");
+        await File.WriteAllTextAsync(Path.Combine(ctx.ProjectPath, "PageD.al"), pageDContent);
+
+        string[] names = ["PageA.al", "PageB.al", "PageD.al"];
+        var before = names.ToDictionary(n => n, n => File.ReadAllBytes(Path.Combine(ctx.ProjectPath, n)));
+
+        ctx.Writer = GuardedFileWriterTests.FailingOnCalls(2);
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        var root = doc.RootElement;
+
+        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
+        Assert.Empty(root.GetProperty("filesChanged").EnumerateArray());
+
+        var conflicts = root.GetProperty("conflicts").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetProperty("filePath").GetString())).ToArray();
+        Assert.Equal(3, conflicts.Length);
+        Assert.Equal(names, conflicts.Order());
+
+        // The JSON contract carries the conflict kind: one WriteFailed, one RolledBack, one NotWritten.
+        var kinds = root.GetProperty("conflicts").EnumerateArray()
+            .Select(e => e.GetProperty("kind").GetString()!).Order().ToArray();
+        Assert.Equal(["NotWritten", "RolledBack", "WriteFailed"], kinds);
+
+        var message = root.GetProperty("message").GetString();
+        Assert.Contains("could not be written", message);
+        Assert.Contains("restored", message);
+
+        var unfixedFiles = root.GetProperty("unfixedDiagnostics").EnumerateArray()
+            .Select(e => Path.GetFileName(e.GetProperty("filePath").GetString()!))
+            .ToHashSet();
+        Assert.Superset(names.ToHashSet(), unfixedFiles);
+
+        foreach (var name in names)
+            Assert.Equal(before[name], File.ReadAllBytes(Path.Combine(ctx.ProjectPath, name)));
+
+        Assert.Empty(TempFiles(ctx.ProjectPath));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_NoTempFilesLeftBehind()
+    {
+        using var ctx = new TestContext();
+
+        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020");
+
+        using var doc = JsonDocument.Parse(resultJson);
+        Assert.True(doc.RootElement.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.Empty(TempFiles(ctx.ProjectPath));
+    }
+
+    private static string[] TempFiles(string projectPath) =>
+        Directory.GetFiles(projectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories);
 
     [Fact]
     public void MergeUnfixed_NoConflicts_ReturnsIdenticalList()

@@ -87,6 +87,9 @@ public sealed class ProjectSession : IDisposable
             if (_disposed)
                 throw new ObjectDisposedException(nameof(ProjectSession));
 
+            // The age guard keeps the temp file of a concurrent apply_fix_all that is mid-commit.
+            ProjectLoader.SweepTempFiles(ProjectPath, TimeSpan.FromSeconds(30));
+
             var onDisk = new HashSet<string>(
                 ProjectLoader.EnumerateAlFiles(ProjectPath),
                 StringComparer.OrdinalIgnoreCase);

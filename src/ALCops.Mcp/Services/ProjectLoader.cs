@@ -20,6 +20,56 @@ public sealed class ProjectLoader
             .Select(Path.GetFullPath)
             .ToArray();
 
+    internal const string TempFilePattern = "*" + GuardedFileWriter.TempSuffix;
+
+    /// <summary>
+    /// Deletes temp files a crashed <see cref="GuardedFileWriter"/> commit left behind under the
+    /// project (outside <c>.alpackages</c>); never deletes anything else. Files younger than
+    /// <paramref name="minAge"/> are kept because a concurrent write may be between creating its
+    /// temp file and moving it over the target.
+    /// </summary>
+    /// <returns>The number of files removed.</returns>
+    internal static int SweepTempFiles(string projectPath, TimeSpan minAge)
+    {
+        string[] candidates;
+        try
+        {
+            candidates = Directory.GetFiles(projectPath, TempFilePattern, SearchOption.AllDirectories);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"Warning: could not scan {projectPath} for stray temp files ({ex.GetType().Name}: {ex.Message}).");
+            return 0;
+        }
+
+        var cutoff = DateTime.UtcNow - minAge;
+        var removed = 0;
+
+        foreach (var file in candidates.Where(f => !f.Contains(".alpackages")))
+        {
+            try
+            {
+                if (!file.EndsWith(GuardedFileWriter.TempSuffix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (minAge > TimeSpan.Zero && File.GetLastWriteTimeUtc(file) > cutoff)
+                    continue;
+
+                File.Delete(file);
+                removed++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"Warning: could not remove stray temp file {file} ({ex.GetType().Name}: {ex.Message}).");
+            }
+        }
+
+        if (removed > 0)
+            Console.Error.WriteLine($"Removed {removed} stray *{GuardedFileWriter.TempSuffix} file(s) under {projectPath}.");
+
+        return removed;
+    }
+
     internal static DocumentInfo CreateDocumentInfo(ProjectId projectId, string normalizedPath, string content)
     {
         var docId = DocumentId.CreateNewId(projectId, Path.GetFileName(normalizedPath));
@@ -39,6 +89,8 @@ public sealed class ProjectLoader
         var appJsonPath = Path.Combine(projectPath, "app.json");
         if (!File.Exists(appJsonPath))
             throw new FileNotFoundException($"No app.json found at {appJsonPath}");
+
+        SweepTempFiles(projectPath, TimeSpan.Zero);
 
         var appJson = await LoadAppJsonAsync(appJsonPath, ct);
 

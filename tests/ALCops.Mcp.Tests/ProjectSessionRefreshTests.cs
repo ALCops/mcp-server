@@ -249,6 +249,38 @@ public class ProjectSessionRefreshTests : IDisposable
     }
 
     [Fact]
+    public async Task StrayTempFile_RemovedOnRefresh_NotAddedAsDocument()
+    {
+        var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);
+        var solutionBefore = session.GetProject().Solution;
+        var pageAPath = Path.Combine(_projectPath, "PageA.al");
+
+        // Older than the 30 s age guard: a crashed write, safe to remove.
+        var stale = GuardedFileWriter.TempPathFor(pageAPath);
+        await File.WriteAllTextAsync(stale, "// crashed write");
+        File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddMinutes(-5));
+
+        // Fresh: may belong to a concurrent write between temp-create and move; must survive.
+        var fresh = GuardedFileWriter.TempPathFor(pageAPath);
+        await File.WriteAllTextAsync(fresh, "// in-flight write");
+
+        var alPackagesDir = Path.Combine(_projectPath, ".alpackages");
+        Directory.CreateDirectory(alPackagesDir);
+        var dependencyTemp = Path.Combine(alPackagesDir, "X.al.x" + GuardedFileWriter.TempSuffix);
+        await File.WriteAllTextAsync(dependencyTemp, "// not ours");
+        File.SetLastWriteTimeUtc(dependencyTemp, DateTime.UtcNow.AddMinutes(-5));
+
+        var summary = await session.RefreshFromDiskAsync();
+
+        Assert.False(summary.Any);
+        Assert.Same(solutionBefore, session.GetProject().Solution);
+        Assert.False(File.Exists(stale));
+        Assert.True(File.Exists(fresh));
+        Assert.True(File.Exists(dependencyTemp));
+        Assert.DoesNotContain(session.FilePathToDocumentId.Keys, k => k.EndsWith(GuardedFileWriter.TempSuffix));
+    }
+
+    [Fact]
     public async Task Dispose_Idempotent()
     {
         var session = await _sessionManager.GetOrLoadProjectAsync(_projectPath);

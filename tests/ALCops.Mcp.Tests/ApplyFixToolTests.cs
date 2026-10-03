@@ -42,7 +42,7 @@ public class ApplyFixToolTests
                 "The fixture, the location, or the analyzer configuration may have changed.");
 
             var result = await ApplyFixTool.ApplyFix(
-                sessionManager, codeFixRunner, analyzerResolver,
+                sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
                 tempProjectPath, filePath, "LC0020", line, column,
                 fixes[0].EquivalenceKey);
 
@@ -88,7 +88,7 @@ public class ApplyFixToolTests
             // Apply — the refresh must pick up the appended line, and the guarded write must
             // succeed because the fix was computed from the refreshed content.
             var result = await ApplyFixTool.ApplyFix(
-                sessionManager, codeFixRunner, analyzerResolver,
+                sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
                 tempProjectPath, filePath, "LC0020", line, column,
                 fixes[0].EquivalenceKey);
 
@@ -114,6 +114,108 @@ public class ApplyFixToolTests
             index += value.Length;
         }
         return count;
+    }
+
+    [Fact]
+    public async Task ApplyFix_FileWithUtf8Bom_KeepsBom()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-bom-test");
+
+        try
+        {
+            // The BOM is added at test time; a committed fixture with a BOM could be mangled by git.
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var bareBytes = await File.ReadAllBytesAsync(filePath);
+            await File.WriteAllBytesAsync(filePath, [0xEF, 0xBB, 0xBF, .. bareBytes]);
+
+            var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
+
+            Assert.Contains("\"applied\":true", result);
+
+            var written = await File.ReadAllBytesAsync(filePath);
+            Assert.Equal([0xEF, 0xBB, 0xBF], written.Take(3));
+            Assert.NotEqual(0xEF, written[3]); // exactly one BOM
+            Assert.NotEqual(bareBytes, written.Skip(3).ToArray());
+            Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_WriteFails_ReturnsIOExceptionAndLeavesFileIntact()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-ioerr-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var originalBytes = await File.ReadAllBytesAsync(filePath);
+
+            var writer = new GuardedFileWriter((_, _) => throw new IOException("injected move failure"));
+            var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, writer);
+
+            Assert.Contains("\"error\":\"IOException\"", result);
+            Assert.Contains("injected move failure", result);
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+            Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_FileNotValidUtf8_ReturnsUnsupportedEncodingAndLeavesFileIntact()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-cp1252-test");
+
+        try
+        {
+            // The fixture has no comment or string literal to alter, so append a comment holding a
+            // Windows-1252 "é" (0xE9). The loader decodes it with replacement, so LC0020 is still found.
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var bareBytes = await File.ReadAllBytesAsync(filePath);
+            byte[] originalBytes = [.. bareBytes, .. "\n// caf"u8, 0xE9, (byte)'\n'];
+            await File.WriteAllBytesAsync(filePath, originalBytes);
+
+            var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
+
+            Assert.Contains("\"error\":\"UnsupportedEncoding\"", result);
+            Assert.Contains("not valid in its detected encoding (UTF-8;", result);
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+            Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    /// <summary>Loads the project, finds the LC0020 fix at MyPage.al:11:17 and applies it through the tool.</summary>
+    private static async Task<(string Result, string EquivalenceKey)> ApplyLc0020Async(
+        string projectPath, string filePath, GuardedFileWriter writer)
+    {
+        using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+        var codeFixRunner = new CodeFixRunner();
+        var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+        var session = await sessionManager.GetOrLoadProjectAsync(projectPath);
+        var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, null);
+
+        const int line = 11, column = 17;
+        var fixes = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", line, column, analyzerSet);
+        Assert.True(fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
+
+        var result = await ApplyFixTool.ApplyFix(
+            sessionManager, codeFixRunner, analyzerResolver, writer,
+            projectPath, filePath, "LC0020", line, column,
+            fixes[0].EquivalenceKey);
+
+        return (result, fixes[0].EquivalenceKey);
     }
 
     [Fact]
