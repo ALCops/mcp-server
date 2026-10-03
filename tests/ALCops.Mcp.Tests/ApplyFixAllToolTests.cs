@@ -360,6 +360,11 @@ public class ApplyFixAllToolTests
         Assert.Equal(3, conflicts.Length);
         Assert.Equal(names, conflicts.Order());
 
+        // The JSON contract carries the conflict kind: one WriteFailed, one RolledBack, one NotWritten.
+        var kinds = root.GetProperty("conflicts").EnumerateArray()
+            .Select(e => e.GetProperty("kind").GetString()!).Order().ToArray();
+        Assert.Equal(["NotWritten", "RolledBack", "WriteFailed"], kinds);
+
         var message = root.GetProperty("message").GetString();
         Assert.Contains("could not be written", message);
         Assert.Contains("restored", message);

@@ -24,14 +24,19 @@ namespace ALCops.Mcp.Services;
 /// <para><b>Encoding.</b> The file is read as bytes for the stale check and decoded with BOM
 /// detection; the encoding of that read is what is written back (preamble + text). UTF-8 with or
 /// without BOM and UTF-16/32 with BOM round-trip; line endings are whatever the new text holds.
-/// The comparison is on decoded text, so a BOM never causes a false stale conflict.</para>
+/// The comparison is on decoded text, so a BOM never causes a false stale conflict.
+/// A BOM-less file must be valid UTF-8; otherwise (e.g. Windows-1252) the write is refused as
+/// <c>UnsupportedEncoding</c> rather than re-encoding the file.</para>
+/// <para><b>Symlinks and permissions.</b> <c>File.Move</c> replaces a symlink at the target path with a
+/// regular file and does not preserve Unix mode bits; both are accepted and out of scope.</para>
 /// <para>The stale-check → move window is best-effort; a concurrent writer can still slip in.</para>
 /// </remarks>
 public sealed class GuardedFileWriter
 {
     internal const string TempSuffix = ".alcops.tmp";
 
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+    // Strict: a BOM-less file that is not valid UTF-8 must not decode (to U+FFFD) and be re-encoded.
+    private static readonly Encoding StrictUtf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly Action<string, string> _move; // (temp, target)
 
@@ -45,7 +50,8 @@ public sealed class GuardedFileWriter
     /// <summary>
     /// Writes <paramref name="newContent"/> to <paramref name="filePath"/> if the file still holds
     /// <paramref name="expectedOriginal"/>; otherwise returns the conflict and writes nothing.
-    /// An I/O failure throws, with the target untouched and no temp file left behind.
+    /// A failure to read the file is returned as a conflict too; a failure to write it throws, with the
+    /// target untouched and no temp file left behind.
     /// </summary>
     public async Task<FileWriteConflict?> WriteIfUnchangedAsync(
         string filePath, string expectedOriginal, string newContent, CancellationToken ct)
@@ -54,15 +60,16 @@ public sealed class GuardedFileWriter
         if (conflict is not null)
             return conflict;
 
-        await CommitAsync(staged!.FilePath, Encode(staged.NewContent, staged.Encoding), ct);
+        await CommitAsync(staged!.FilePath, staged.NewBytes, ct);
         return null;
     }
 
     /// <summary>
-    /// Writes a batch in two phases. Phase 1 reads every file; changed or deleted ones drop out as
+    /// Writes a batch in two phases. Phase 1 reads every file; changed, deleted, unreadable or non-UTF-8 ones drop out as
     /// <see cref="BatchWriteResult.StaleConflicts"/> and the rest proceed. Phase 2 commits them one
     /// by one; if a commit fails, every file already committed in this call is restored to its
-    /// original bytes and the whole staged set is reported in <see cref="BatchWriteResult.RolledBack"/>.
+    /// original bytes (unless it was modified after this call wrote it) and the staged set is reported in
+    /// <see cref="BatchWriteResult.RolledBack"/>.
     /// A cancellation during phase 2 rolls back the same way and then rethrows.
     /// </summary>
     public async Task<BatchWriteResult> WriteAllIfUnchangedAsync(IReadOnlyList<PendingWrite> writes, CancellationToken ct)
@@ -84,7 +91,7 @@ public sealed class GuardedFileWriter
         {
             try
             {
-                await CommitAsync(s.FilePath, Encode(s.NewContent, s.Encoding), ct);
+                await CommitAsync(s.FilePath, s.NewBytes, ct);
                 committed.Add(s);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
@@ -103,20 +110,30 @@ public sealed class GuardedFileWriter
         List<Staged> staged, List<Staged> committed, Staged failed, Exception failure,
         List<FileWriteConflict> staleConflicts)
     {
-        var unrestored = new List<(string Path, Exception Error)>();
+        var restoreFailed = new List<(string Path, Exception Error)>();
+        var modifiedSince = new List<string>();
         foreach (var c in committed)
         {
             try
             {
+                // Someone may have edited the file after we wrote it; restoring would destroy that edit.
+                var current = await File.ReadAllBytesAsync(c.FilePath, CancellationToken.None);
+                if (!current.AsSpan().SequenceEqual(c.NewBytes))
+                {
+                    modifiedSince.Add(c.FilePath);
+                    continue;
+                }
+
                 // Not cancellable: the caller's cancellation must not leave the batch half-applied.
                 await CommitAsync(c.FilePath, c.OriginalBytes, CancellationToken.None);
             }
             catch (Exception ex)
             {
-                unrestored.Add((c.FilePath, ex));
+                restoreFailed.Add((c.FilePath, ex));
             }
         }
 
+        var unrestoredCount = restoreFailed.Count + modifiedSince.Count;
         var message = new StringBuilder(
             $"{failed.FilePath} could not be written ({failure.GetType().Name}: {failure.Message})");
 
@@ -124,31 +141,44 @@ public sealed class GuardedFileWriter
         {
             message.Append("; nothing from the batch was written.");
         }
-        else if (unrestored.Count == 0)
+        else if (unrestoredCount == 0)
         {
             message.Append($"; the {committed.Count} file(s) already written in this call were restored and nothing from the batch was kept.");
         }
         else
         {
-            message.Append($"; {committed.Count - unrestored.Count} of the {committed.Count} file(s) already written in this call were restored.");
-            message.Append(" Rollback failed for: ");
-            message.Append(string.Join("; ", unrestored.Select(u => $"{u.Path} ({u.Error.GetType().Name}: {u.Error.Message})")));
-            message.Append(" — these files are left with the fix applied.");
+            message.Append($"; {committed.Count - unrestoredCount} of the {committed.Count} file(s) already written in this call were restored.");
+            if (restoreFailed.Count > 0)
+            {
+                message.Append(" Rollback failed for: ");
+                message.Append(string.Join("; ", restoreFailed.Select(u => $"{u.Path} ({u.Error.GetType().Name}: {u.Error.Message})")));
+                message.Append(" — these files are left with the fix applied.");
+            }
+            foreach (var path in modifiedSince)
+                message.Append($" {path} was modified after this call wrote it; left as is.");
         }
 
         var failureMessage = message.ToString();
-        var unrestoredPaths = unrestored.Select(u => u.Path).ToHashSet(StringComparer.Ordinal);
+        var unrestoredPaths = restoreFailed.Select(u => u.Path).Concat(modifiedSince).ToHashSet(StringComparer.Ordinal);
         var committedPaths = committed.Select(c => c.FilePath).ToHashSet(StringComparer.Ordinal);
 
         var rolledBack = staged
             .Where(s => !unrestoredPaths.Contains(s.FilePath))
-            .Select(s => new FileWriteConflict(s.FilePath,
-                ReferenceEquals(s, failed) ? failureMessage
-                : committedPaths.Contains(s.FilePath) ? $"{s.FilePath} was rolled back because {failed.FilePath} could not be written."
-                : $"{s.FilePath} was not written because {failed.FilePath} could not be written."))
+            .Select(s =>
+                ReferenceEquals(s, failed)
+                    ? new FileWriteConflict(s.FilePath, failureMessage, FileWriteConflictKind.WriteFailed)
+                : committedPaths.Contains(s.FilePath)
+                    ? new FileWriteConflict(s.FilePath,
+                        $"{s.FilePath} was rolled back because {failed.FilePath} could not be written.",
+                        FileWriteConflictKind.RolledBack)
+                    : new FileWriteConflict(s.FilePath,
+                        $"{s.FilePath} was not written because {failed.FilePath} could not be written.",
+                        FileWriteConflictKind.NotWritten))
             .ToList();
 
-        return new BatchWriteResult([.. unrestored.Select(u => u.Path)], staleConflicts, rolledBack, failureMessage);
+        // Unrestored files stay in Written, in commit order.
+        var written = committed.Where(c => unrestoredPaths.Contains(c.FilePath)).Select(c => c.FilePath).ToList();
+        return new BatchWriteResult(written, staleConflicts, rolledBack, failureMessage);
     }
 
     private static async Task<(Staged? Staged, FileWriteConflict? Conflict)> StageAsync(PendingWrite write, CancellationToken ct)
@@ -163,13 +193,32 @@ public sealed class GuardedFileWriter
             return (null, new FileWriteConflict(write.FilePath,
                 $"{write.FilePath} was deleted after the fix was computed; nothing was written."));
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return (null, new FileWriteConflict(write.FilePath,
+                $"{write.FilePath} could not be read ({ex.GetType().Name}: {ex.Message}); not overwritten.",
+                FileWriteConflictKind.ReadFailed));
+        }
 
-        var current = Decode(bytes, out var encoding);
+        string current;
+        Encoding encoding;
+        try
+        {
+            current = Decode(bytes, out encoding);
+        }
+        catch (DecoderFallbackException)
+        {
+            return (null, new FileWriteConflict(write.FilePath,
+                $"{write.FilePath} is not valid UTF-8 and carries no byte-order mark (e.g. Windows-1252); not overwritten to avoid re-encoding it.",
+                FileWriteConflictKind.UnsupportedEncoding));
+        }
+
         if (!string.Equals(current, write.ExpectedOriginal, StringComparison.Ordinal))
             return (null, new FileWriteConflict(write.FilePath,
                 $"{write.FilePath} changed on disk after the fix was computed; not overwritten."));
 
-        return (new Staged(write.FilePath, bytes, encoding, write.NewContent), null);
+        // Encoded here, in phase 1, so nothing can fail on encoding once commits have started.
+        return (new Staged(write.FilePath, bytes, Encode(write.NewContent, encoding)), null);
     }
 
     private async Task CommitAsync(string filePath, byte[] bytes, CancellationToken ct)
@@ -192,7 +241,7 @@ public sealed class GuardedFileWriter
 
     internal static string Decode(byte[] bytes, out Encoding encoding)
     {
-        using var reader = new StreamReader(new MemoryStream(bytes), Utf8NoBom, detectEncodingFromByteOrderMarks: true);
+        using var reader = new StreamReader(new MemoryStream(bytes), StrictUtf8NoBom, detectEncodingFromByteOrderMarks: true);
         var text = reader.ReadToEnd(); // CurrentEncoding is only final after reading
         encoding = reader.CurrentEncoding;
         return text;
@@ -211,5 +260,5 @@ public sealed class GuardedFileWriter
         return result;
     }
 
-    private sealed record Staged(string FilePath, byte[] OriginalBytes, Encoding Encoding, string NewContent);
+    private sealed record Staged(string FilePath, byte[] OriginalBytes, byte[] NewBytes);
 }

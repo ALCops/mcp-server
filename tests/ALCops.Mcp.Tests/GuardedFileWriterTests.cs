@@ -46,6 +46,7 @@ public class GuardedFileWriterTests : IDisposable
         Assert.NotNull(conflict);
         Assert.Equal(path, conflict!.FilePath);
         Assert.Contains("changed on disk", conflict.Message);
+        Assert.Equal(FileWriteConflictKind.StaleFile, conflict.Kind);
         Assert.Equal("someone else's edit", await File.ReadAllTextAsync(path));
     }
 
@@ -320,6 +321,122 @@ public class GuardedFileWriterTests : IDisposable
         Assert.Equal("b", await File.ReadAllTextAsync(b));
         Assert.Equal("c", await File.ReadAllTextAsync(c));
         Assert.Empty(TempFiles());
+    }
+
+    // --- Review round 1: invalid UTF-8, read failures, rollback over a newer edit ------------
+
+    // "caf" + 0xE9: Windows-1252 "café", not valid UTF-8 and no BOM.
+    private static readonly byte[] Windows1252Bytes = [0x63, 0x61, 0x66, 0xE9];
+
+    [Fact]
+    public async Task InvalidUtf8WithoutBom_RefusedAsUnsupportedEncoding_FileUntouched()
+    {
+        var path = Path.Combine(_tempDir, "cp1252.al");
+        await File.WriteAllBytesAsync(path, Windows1252Bytes);
+
+        // The loader decodes with replacement, so the expected text carries U+FFFD.
+        var conflict = await _writer.WriteIfUnchangedAsync(path, "caf�", "new", CancellationToken.None);
+
+        Assert.NotNull(conflict);
+        Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict!.Kind);
+        Assert.Contains("not valid UTF-8", conflict.Message);
+        Assert.Equal(Windows1252Bytes, await File.ReadAllBytesAsync(path));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public async Task Batch_InvalidUtf8File_SkippedAsConflict_OthersWritten()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+        await File.WriteAllBytesAsync(b, Windows1252Bytes);
+
+        var result = await _writer.WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "caf�", "B"), Write(c, "c", "C")], CancellationToken.None);
+
+        Assert.Equal([a, c], result.Written);
+        var conflict = Assert.Single(result.StaleConflicts);
+        Assert.Equal(b, conflict.FilePath);
+        Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict.Kind);
+        Assert.Empty(result.RolledBack);
+        Assert.Null(result.FailureMessage);
+        Assert.Equal(Windows1252Bytes, await File.ReadAllBytesAsync(b));
+        Assert.Equal("A", await File.ReadAllTextAsync(a));
+        Assert.Equal("C", await File.ReadAllTextAsync(c));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public async Task Batch_LockedFile_SkippedAsReadFailed_OthersWritten()
+    {
+        // FileShare.None is advisory on Linux; this test is meaningful only on Windows.
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var (a, b, c) = await CreateThreeFiles();
+
+        BatchWriteResult result;
+        using (new FileStream(b, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            result = await _writer.WriteAllIfUnchangedAsync(
+                [Write(a, "a", "A"), Write(b, "b", "B"), Write(c, "c", "C")], CancellationToken.None);
+        }
+
+        Assert.Equal([a, c], result.Written);
+        var conflict = Assert.Single(result.StaleConflicts);
+        Assert.Equal(b, conflict.FilePath);
+        Assert.Equal(FileWriteConflictKind.ReadFailed, conflict.Kind);
+        Assert.Contains("could not be read", conflict.Message);
+        Assert.Empty(result.RolledBack);
+        Assert.Null(result.FailureMessage);
+        Assert.Equal("b", await File.ReadAllTextAsync(b));
+        Assert.Equal("A", await File.ReadAllTextAsync(a));
+        Assert.Equal("C", await File.ReadAllTextAsync(c));
+    }
+
+    [Fact]
+    public async Task Batch_FileEditedAfterCommit_NotRolledBack_StaysWritten()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+
+        // Call 1 commits a; call 2 (b) first simulates an editor touching a, then fails.
+        var calls = 0;
+        var writer = new GuardedFileWriter((temp, target) =>
+        {
+            if (Interlocked.Increment(ref calls) == 2)
+            {
+                File.AppendAllText(a, "\n// edited");
+                throw new IOException("injected move failure");
+            }
+            File.Move(temp, target, overwrite: true);
+        });
+
+        var result = await writer.WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "b", "B"), Write(c, "c", "C")], CancellationToken.None);
+
+        Assert.Equal("A\n// edited", await File.ReadAllTextAsync(a));
+        Assert.Equal([a], result.Written);
+        Assert.NotNull(result.FailureMessage);
+        Assert.Contains($"{a} was modified after this call wrote it; left as is.", result.FailureMessage);
+        Assert.Equal([b, c], result.RolledBack.Select(r => r.FilePath));
+        Assert.Equal(
+            [FileWriteConflictKind.WriteFailed, FileWriteConflictKind.NotWritten],
+            result.RolledBack.Select(r => r.Kind));
+        Assert.Equal("b", await File.ReadAllTextAsync(b));
+        Assert.Equal("c", await File.ReadAllTextAsync(c));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public async Task Batch_CommitFails_ConflictKindsDescribeEachFile()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+
+        var result = await FailingOnCalls(2).WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "b", "B"), Write(c, "c", "C")], CancellationToken.None);
+
+        Assert.Equal(
+            [FileWriteConflictKind.RolledBack, FileWriteConflictKind.WriteFailed, FileWriteConflictKind.NotWritten],
+            result.RolledBack.Select(r => r.Kind));
     }
 
     private async Task<(string A, string B, string C)> CreateThreeFiles()

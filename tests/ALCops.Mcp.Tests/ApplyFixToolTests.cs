@@ -168,6 +168,33 @@ public class ApplyFixToolTests
         }
     }
 
+    [Fact]
+    public async Task ApplyFix_FileNotValidUtf8_ReturnsUnsupportedEncodingAndLeavesFileIntact()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-cp1252-test");
+
+        try
+        {
+            // The fixture has no comment or string literal to alter, so append a comment holding a
+            // Windows-1252 "é" (0xE9). The loader decodes it with replacement, so LC0020 is still found.
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var bareBytes = await File.ReadAllBytesAsync(filePath);
+            byte[] originalBytes = [.. bareBytes, .. "\n// caf"u8, 0xE9, (byte)'\n'];
+            await File.WriteAllBytesAsync(filePath, originalBytes);
+
+            var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
+
+            Assert.Contains("\"error\":\"UnsupportedEncoding\"", result);
+            Assert.Contains("not valid UTF-8", result);
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+            Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
     /// <summary>Loads the project, finds the LC0020 fix at MyPage.al:11:17 and applies it through the tool.</summary>
     private static async Task<(string Result, string EquivalenceKey)> ApplyLc0020Async(
         string projectPath, string filePath, GuardedFileWriter writer)

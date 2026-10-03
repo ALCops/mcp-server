@@ -15,8 +15,9 @@ public sealed class ApplyFixAllTool
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
-        "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
-        "If a write fails, every file written in this call is restored and all of them are listed in 'conflicts'. " +
+        "(or that cannot be read, or are not valid UTF-8 without a byte-order mark) " +
+        "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
+        "If a write fails, every file written in this call is restored (unless it was edited since) and all of them are listed in 'conflicts'. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,
@@ -119,9 +120,9 @@ public sealed class ApplyFixAllTool
                 conflictMessage = (batch.FailureMessage, stale) switch
                 {
                     (null, 0) => null,
-                    (null, _) => $"{stale} file(s) were skipped because they changed on disk while the fix was being computed; their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them.",
+                    (null, _) => $"{stale} file(s) were skipped (changed on disk, unreadable, or not valid UTF-8; see conflicts); their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them.",
                     (var failure, 0) => failure,
-                    (var failure, _) => $"{failure} {stale} other file(s) were skipped because they changed on disk while the fix was being computed.",
+                    (var failure, _) => $"{failure} {stale} other file(s) were skipped (changed on disk, unreadable, or not valid UTF-8; see conflicts).",
                 };
             }
 
