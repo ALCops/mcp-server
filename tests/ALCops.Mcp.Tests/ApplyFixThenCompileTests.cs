@@ -61,7 +61,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         Assert.True(fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
 
         var applyResult = await ApplyFixTool.ApplyFix(
-            sessionManager, codeFixRunner, analyzerResolver,
+            sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
             projectDir, filePath, "LC0020", line, column,
             fixes[0].EquivalenceKey, analyzers: null, Cts.Token);
 

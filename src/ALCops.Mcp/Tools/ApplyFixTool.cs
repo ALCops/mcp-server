@@ -12,11 +12,13 @@ public sealed class ApplyFixTool
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
         "Writes the fixed content to the file on disk unless the file changed after the fix was computed, " +
         "in which case nothing is written and { error: 'StaleFile' } is returned. " +
+        "The write is atomic and preserves the file's encoding and line endings. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFix(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
         ProjectAnalyzerResolver analyzerResolver,
+        GuardedFileWriter fileWriter,
         [Description("Absolute path to the AL project folder (must contain app.json).")] string projectPath,
         [Description("Absolute path to the .al file containing the diagnostic.")] string filePath,
         [Description("The diagnostic rule ID (e.g., 'AC0018', 'LC0001').")] string diagnosticId,
@@ -41,7 +43,7 @@ public sealed class ApplyFixTool
                     new { error = "NoFixFound", message = $"No code fix with equivalence key '{equivalenceKey}' found for {diagnosticId} at {filePath}:{line}:{column}." },
                     JsonDefaults.Options);
 
-            var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
+            var conflict = await fileWriter.WriteIfUnchangedAsync(
                 filePath, result.OriginalContent, result.ModifiedContent, cancellationToken);
 
             if (conflict is not null)

@@ -114,6 +114,7 @@ public class ProjectLoaderTests
             var alPackages = Path.Combine(root, ".alpackages");
             Directory.CreateDirectory(alPackages);
             File.WriteAllText(Path.Combine(alPackages, "Dep.al"), "// dependency");
+            File.WriteAllText(Path.Combine(root, "Page.al.x" + GuardedFileWriter.TempSuffix), "// temp");
 
             var files = ProjectLoader.EnumerateAlFiles(root);
 
@@ -124,6 +125,65 @@ public class ProjectLoaderTests
         {
             if (Directory.Exists(root))
                 Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LoadProjectAsync_SweepsStrayTempFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}");
+        try
+        {
+            TestAnalyzers.CopyDirectory(GetFixturePath("MinimalProject"), root);
+            var alFile = Directory.GetFiles(root, "*.al").First();
+            var stray = GuardedFileWriter.TempPathFor(alFile);
+            File.WriteAllText(stray, "// left behind by a crashed write");
+            var alPackages = Path.Combine(root, ".alpackages");
+            Directory.CreateDirectory(alPackages);
+            var dependencyTemp = Path.Combine(alPackages, "Dep.al.x" + GuardedFileWriter.TempSuffix);
+            File.WriteAllText(dependencyTemp, "// not ours to touch");
+
+            var session = await CreateLoader().LoadProjectAsync(root);
+
+            Assert.False(File.Exists(stray));
+            Assert.True(File.Exists(dependencyTemp));
+            Assert.DoesNotContain(session.FilePathToDocumentId.Keys, k => k.EndsWith(GuardedFileWriter.TempSuffix));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void SweepTempFiles_IgnoresAlPackages_ReturnsCount()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"alcops-test-{Guid.NewGuid():N}");
+        try
+        {
+            var sub = Path.Combine(root, "src", "pages");
+            Directory.CreateDirectory(sub);
+            var alPackages = Path.Combine(root, ".alpackages");
+            Directory.CreateDirectory(alPackages);
+
+            File.WriteAllText(Path.Combine(root, "A.al"), "// a");
+            File.WriteAllText(Path.Combine(root, "A.al.1" + GuardedFileWriter.TempSuffix), "");
+            File.WriteAllText(Path.Combine(sub, "B.al.2" + GuardedFileWriter.TempSuffix), "");
+            File.WriteAllText(Path.Combine(root, "unrelated.tmp"), "");
+            var dependencyTemp = Path.Combine(alPackages, "C.al.3" + GuardedFileWriter.TempSuffix);
+            File.WriteAllText(dependencyTemp, "");
+
+            Assert.Equal(2, ProjectLoader.SweepTempFiles(root, TimeSpan.Zero));
+
+            Assert.True(File.Exists(Path.Combine(root, "A.al")));
+            Assert.True(File.Exists(Path.Combine(root, "unrelated.tmp")));
+            Assert.True(File.Exists(dependencyTemp));
+            Assert.Empty(Directory.GetFiles(sub));
+            Assert.Equal(0, ProjectLoader.SweepTempFiles(root, TimeSpan.Zero));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(root);
         }
     }
 

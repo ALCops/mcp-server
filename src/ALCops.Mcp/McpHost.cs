@@ -35,6 +35,7 @@ internal static class McpHost
         builder.Services.AddSingleton<ProjectLoader>();
         builder.Services.AddSingleton<ProjectSessionManager>();
         builder.Services.AddSingleton<CodeFixRunner>();
+        builder.Services.AddSingleton<GuardedFileWriter>();
         builder.Services.AddSingleton(sp =>
         {
             var provisioner = sp.GetRequiredService<AlcopsAnalyzerProvisioner>();

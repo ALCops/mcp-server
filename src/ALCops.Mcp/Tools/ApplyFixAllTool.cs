@@ -16,11 +16,13 @@ public sealed class ApplyFixAllTool
         "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
         "are left untouched and listed in 'conflicts' and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
+        "If a write fails, every file written in this call is restored and all of them are listed in 'conflicts'. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
     public static async Task<string> ApplyFixAll(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
         ProjectAnalyzerResolver analyzerResolver,
+        GuardedFileWriter fileWriter,
         [Description("Absolute path to the AL project folder (must contain app.json).")] string projectPath,
         [Description("The diagnostic rule ID to fix everywhere (e.g., 'AC0018', 'LC0001'). Exactly one rule per call.")] string diagnosticId,
         [Description("Fix scope: 'project' (default, every file in the project) or 'document' (a single file, requires filePath). " +
@@ -97,40 +99,31 @@ public sealed class ApplyFixAllTool
             }
 
             // Completed
-            var written = new List<string>();
-            var conflicts = new List<FileWriteConflict>();
+            IReadOnlyList<string> written = [];
+            List<FileWriteConflict> conflicts = [];
+            string? conflictMessage = null;
 
             if (!dryRun)
             {
-                foreach (var change in result.Changes)
+                var batch = await fileWriter.WriteAllIfUnchangedAsync(
+                    [.. result.Changes.Select(c => new PendingWrite(c.FilePath, c.OriginalContent, c.ModifiedContent))],
+                    cancellationToken);
+
+                written = batch.Written;
+                conflicts = [.. batch.StaleConflicts, .. batch.RolledBack];
+
+                foreach (var conflict in conflicts)
+                    Console.Error.WriteLine($"Warning: {conflict.Message}");
+
+                var stale = batch.StaleConflicts.Count;
+                conflictMessage = (batch.FailureMessage, stale) switch
                 {
-                    try
-                    {
-                        var conflict = await GuardedFileWriter.WriteIfUnchangedAsync(
-                            change.FilePath, change.OriginalContent, change.ModifiedContent, cancellationToken);
-
-                        if (conflict is not null)
-                        {
-                            Console.Error.WriteLine($"Warning: {conflict.Message}");
-                            conflicts.Add(conflict);
-                        }
-                        else
-                        {
-                            written.Add(change.FilePath);
-                        }
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        Console.Error.WriteLine($"Warning: {change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message})");
-                        conflicts.Add(new FileWriteConflict(change.FilePath,
-                            $"{change.FilePath} could not be written ({ex.GetType().Name}: {ex.Message}); the other files were still processed."));
-                    }
-                }
+                    (null, 0) => null,
+                    (null, _) => $"{stale} file(s) were skipped because they changed on disk while the fix was being computed; their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them.",
+                    (var failure, 0) => failure,
+                    (var failure, _) => $"{failure} {stale} other file(s) were skipped because they changed on disk while the fix was being computed.",
+                };
             }
-
-            string? conflictMessage = conflicts.Count > 0
-                ? $"{conflicts.Count} file(s) were skipped because they changed on disk while the fix was being computed; their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them."
-                : null;
 
             var unfixed = MergeUnfixed(result, conflicts);
 
@@ -142,7 +135,7 @@ public sealed class ApplyFixAllTool
                 fixTitle = result.FixTitle,
                 equivalenceKey = result.EquivalenceKey,
                 diagnosticsFound = result.DiagnosticsFound,
-                filesChanged = dryRun ? result.Changes.Select(c => c.FilePath).ToArray() : written.ToArray(),
+                filesChanged = dryRun ? result.Changes.Select(c => c.FilePath).ToArray() : [.. written],
                 conflicts,
                 message = conflictMessage,
                 unfixedDiagnostics = unfixed,
