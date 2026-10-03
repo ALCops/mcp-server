@@ -185,7 +185,7 @@ public class ApplyFixToolTests
             var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
 
             Assert.Contains("\"error\":\"UnsupportedEncoding\"", result);
-            Assert.Contains("not valid UTF-8", result);
+            Assert.Contains("not valid in its detected encoding (UTF-8;", result);
             Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
             Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
         }

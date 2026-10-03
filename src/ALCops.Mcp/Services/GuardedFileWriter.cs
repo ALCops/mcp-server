@@ -25,8 +25,9 @@ namespace ALCops.Mcp.Services;
 /// detection; the encoding of that read is what is written back (preamble + text). UTF-8 with or
 /// without BOM and UTF-16/32 with BOM round-trip; line endings are whatever the new text holds.
 /// The comparison is on decoded text, so a BOM never causes a false stale conflict.
-/// A BOM-less file must be valid UTF-8; otherwise (e.g. Windows-1252) the write is refused as
-/// <c>UnsupportedEncoding</c> rather than re-encoding the file.</para>
+/// Every detected encoding (UTF-8 without BOM included) is decoded strictly: a file holding bytes
+/// that are invalid in that encoding (e.g. a Windows-1252 byte in a UTF-8 file, or a lone surrogate
+/// in a UTF-16 file) is refused as <c>UnsupportedEncoding</c> rather than re-encoded with U+FFFD.</para>
 /// <para><b>Symlinks and permissions.</b> <c>File.Move</c> replaces a symlink at the target path with a
 /// regular file and does not preserve Unix mode bits; both are accepted and out of scope.</para>
 /// <para>The stale-check → move window is best-effort; a concurrent writer can still slip in.</para>
@@ -35,8 +36,14 @@ public sealed class GuardedFileWriter
 {
     internal const string TempSuffix = ".alcops.tmp";
 
-    // Strict: a BOM-less file that is not valid UTF-8 must not decode (to U+FFFD) and be re-encoded.
+    // Strict decoders for every detected encoding: invalid input must throw, not decode to U+FFFD and
+    // be re-encoded. The BOM flags make GetPreamble() emit the same BOM the file was read with.
     private static readonly Encoding StrictUtf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf8Bom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf16LE = new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf16BE = new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true);
+    private static readonly Encoding StrictUtf32LE = new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true);
+    private static readonly Encoding StrictUtf32BE = new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true);
 
     private readonly Action<string, string> _move; // (temp, target)
 
@@ -65,7 +72,7 @@ public sealed class GuardedFileWriter
     }
 
     /// <summary>
-    /// Writes a batch in two phases. Phase 1 reads every file; changed, deleted, unreadable or non-UTF-8 ones drop out as
+    /// Writes a batch in two phases. Phase 1 reads every file; changed, deleted, unreadable or invalidly encoded ones drop out as
     /// <see cref="BatchWriteResult.StaleConflicts"/> and the rest proceed. Phase 2 commits them one
     /// by one; if a commit fails, every file already committed in this call is restored to its
     /// original bytes (unless it was modified after this call wrote it) and the staged set is reported in
@@ -209,7 +216,7 @@ public sealed class GuardedFileWriter
         catch (DecoderFallbackException)
         {
             return (null, new FileWriteConflict(write.FilePath,
-                $"{write.FilePath} is not valid UTF-8 and carries no byte-order mark (e.g. Windows-1252); not overwritten to avoid re-encoding it.",
+                $"{write.FilePath} contains bytes that are not valid in its detected encoding ({DisplayName(DetectEncoding(bytes, out _))}; e.g. a Windows-1252 byte in a UTF-8 file); not overwritten to avoid re-encoding it.",
                 FileWriteConflictKind.UnsupportedEncoding));
         }
 
@@ -239,13 +246,38 @@ public sealed class GuardedFileWriter
         }
     }
 
+    /// <summary>
+    /// Decodes <paramref name="bytes"/> with the encoding named by its BOM (UTF-8 without BOM if none),
+    /// stripping the BOM. Throws <see cref="DecoderFallbackException"/> on any invalid input.
+    /// </summary>
     internal static string Decode(byte[] bytes, out Encoding encoding)
     {
-        using var reader = new StreamReader(new MemoryStream(bytes), StrictUtf8NoBom, detectEncodingFromByteOrderMarks: true);
-        var text = reader.ReadToEnd(); // CurrentEncoding is only final after reading
-        encoding = reader.CurrentEncoding;
-        return text;
+        encoding = DetectEncoding(bytes, out var preambleLength);
+        return encoding.GetString(bytes, preambleLength, bytes.Length - preambleLength);
     }
+
+    private static Encoding DetectEncoding(ReadOnlySpan<byte> bytes, out int preambleLength)
+    {
+        // UTF-32 LE (FF FE 00 00) must be checked before UTF-16 LE (FF FE).
+        (Encoding encoding, preambleLength) = bytes switch
+        {
+            [0xFF, 0xFE, 0x00, 0x00, ..] => (StrictUtf32LE, 4),
+            [0x00, 0x00, 0xFE, 0xFF, ..] => (StrictUtf32BE, 4),
+            [0xEF, 0xBB, 0xBF, ..] => (StrictUtf8Bom, 3),
+            [0xFF, 0xFE, ..] => (StrictUtf16LE, 2),
+            [0xFE, 0xFF, ..] => (StrictUtf16BE, 2),
+            _ => (StrictUtf8NoBom, 0),
+        };
+        return encoding;
+    }
+
+    private static string DisplayName(Encoding encoding) =>
+        ReferenceEquals(encoding, StrictUtf8Bom) ? "UTF-8 with BOM"
+        : ReferenceEquals(encoding, StrictUtf16LE) ? "UTF-16 LE"
+        : ReferenceEquals(encoding, StrictUtf16BE) ? "UTF-16 BE"
+        : ReferenceEquals(encoding, StrictUtf32LE) ? "UTF-32 LE"
+        : ReferenceEquals(encoding, StrictUtf32BE) ? "UTF-32 BE"
+        : "UTF-8";
 
     internal static byte[] Encode(string text, Encoding encoding)
     {

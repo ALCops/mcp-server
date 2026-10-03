@@ -339,9 +339,56 @@ public class GuardedFileWriterTests : IDisposable
 
         Assert.NotNull(conflict);
         Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict!.Kind);
-        Assert.Contains("not valid UTF-8", conflict.Message);
+        Assert.Contains("not valid in its detected encoding (UTF-8;", conflict.Message);
         Assert.Equal(Windows1252Bytes, await File.ReadAllBytesAsync(path));
         Assert.Empty(TempFiles());
+    }
+
+    // --- Review round 2: invalid bytes behind a BOM must be refused too -----------------------
+
+    [Fact]
+    public async Task Utf8Bom_WithInvalidByte_Refused()
+    {
+        // UTF-8 BOM + "a" + 0xE9 (a stray Windows-1252 byte) + "b".
+        byte[] bytes = [0xEF, 0xBB, 0xBF, 0x61, 0xE9, 0x62];
+        var path = Path.Combine(_tempDir, "bom-invalid.al");
+        await File.WriteAllBytesAsync(path, bytes);
+
+        // The loader decodes with replacement, so the expected text carries U+FFFD and would match.
+        var conflict = await _writer.WriteIfUnchangedAsync(path, "a�b", "new", CancellationToken.None);
+
+        Assert.NotNull(conflict);
+        Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict!.Kind);
+        Assert.Contains("(UTF-8 with BOM;", conflict.Message);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(path));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public async Task Utf16Le_WithLoneSurrogate_Refused()
+    {
+        // UTF-16 LE BOM + a lone high surrogate (U+D800) + "a".
+        byte[] bytes = [0xFF, 0xFE, 0x00, 0xD8, 0x61, 0x00];
+        var path = Path.Combine(_tempDir, "utf16-surrogate.al");
+        await File.WriteAllBytesAsync(path, bytes);
+
+        var conflict = await _writer.WriteIfUnchangedAsync(path, "�a", "new", CancellationToken.None);
+
+        Assert.NotNull(conflict);
+        Assert.Equal(FileWriteConflictKind.UnsupportedEncoding, conflict!.Kind);
+        Assert.Contains("(UTF-16 LE;", conflict.Message);
+        Assert.Equal(bytes, await File.ReadAllBytesAsync(path));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public void Decode_EmptyFile_IsEmptyUtf8WithoutBom()
+    {
+        var text = GuardedFileWriter.Decode([], out var encoding);
+
+        Assert.Equal("", text);
+        Assert.Empty(encoding.GetPreamble());
+        Assert.Equal(Encoding.UTF8.CodePage, encoding.CodePage);
     }
 
     [Fact]
