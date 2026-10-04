@@ -16,7 +16,7 @@ public sealed class ApplyFixAllTool
         "Writes changed files directly to disk unless dryRun is true. " +
         "If the rule offers more than one distinct fix and no equivalenceKey is given, returns the error Ambiguous whose candidates " +
         "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
-        "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses, which is NotFound with reason SuppressedByRuleset. " +
+        "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses (NotFound with reason SuppressedByRuleset) or one no loaded analyzer reports (NotFound with reason NoAnalyzerForRule). " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
         "(or that cannot be read, or are not valid in their detected encoding) " +
         "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +

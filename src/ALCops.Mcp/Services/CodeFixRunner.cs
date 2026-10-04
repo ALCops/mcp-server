@@ -206,6 +206,11 @@ public sealed class CodeFixRunner
         if (IsRulesetSuppressed(analyzerProvider, diagnosticId))
             return NotFound(diagnosticId, FixNotFoundReason.SuppressedByRuleset);
 
+        // Same for a rule no loaded analyzer reports: get_fixes and apply_fix say NoAnalyzerForRule, and
+        // "zero occurrences" would wrongly tell the caller the code is clean.
+        if (!analyzerProvider.GetAllAnalyzers().Any(a => a.SupportedDiagnostics.Any(d => d.Id == diagnosticId)))
+            return NotFound(diagnosticId, FixNotFoundReason.NoAnalyzerForRule);
+
         var normalizedFilePath = filePath is null ? null : Path.GetFullPath(filePath);
 
         if (scope == FixAllScope.Document && session.GetDocument(normalizedFilePath!) is null)

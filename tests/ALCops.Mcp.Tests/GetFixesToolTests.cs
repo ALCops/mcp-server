@@ -188,10 +188,18 @@ public sealed class GetFixesToolTests
             var real = await analyzerResolver.ResolveAsync(projectPath, null);
 
             var provider = new DecoratedProvider(real, hideAnalyzers: true);
-            var lookup = await new CodeFixRunner().GetFixesAsync(
+            var runner = new CodeFixRunner();
+            var lookup = await runner.GetFixesAsync(
                 session, Path.Combine(projectPath, "MyPage.al"), "LC0020", 11, 17, provider);
 
             Assert.Equal(FixNotFoundReason.NoAnalyzerForRule, lookup.NotFoundReason);
+
+            // apply_fix_all agrees instead of reporting zero occurrences (which would read as "clean").
+            var fixAll = await runner.ApplyFixAllAsync(
+                session, "LC0020", FixAllScope.Project, null, null, provider);
+
+            Assert.Equal(FixAllStatus.NotFound, fixAll.Status);
+            Assert.Equal(FixNotFoundReason.NoAnalyzerForRule, fixAll.NotFoundReason);
             return 0;
         });
     }
