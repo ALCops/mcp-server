@@ -1,8 +1,8 @@
 using System.ComponentModel;
-using System.Text.Json;
 using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using Microsoft.Dynamics.Nav.CodeAnalysis.CodeFixes;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace ALCops.Mcp.Tools;
@@ -13,13 +13,16 @@ public sealed class ApplyFixAllTool
     [McpServerTool(Name = "apply_fix_all", ReadOnly = false, Destructive = false),
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
-        "Writes changed files directly to disk unless dryRun is true. Use get_fixes first to discover equivalenceKey options. " +
+        "Writes changed files directly to disk unless dryRun is true. " +
+        "If the rule offers more than one distinct fix and no equivalenceKey is given, returns the error Ambiguous whose candidates " +
+        "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
+        "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses, which is NotFound with reason SuppressedByRuleset. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
         "(or that cannot be read, or are not valid in their detected encoding) " +
         "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
         "If a write fails, every file written in this call is restored (unless it was edited since) and all of them are listed in 'conflicts'. " +
         "Verify with analyze or al_compile (options.onlyErrors: false).")]
-    public static async Task<string> ApplyFixAll(
+    public static async Task<CallToolResult> ApplyFixAll(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
         ProjectAnalyzerResolver analyzerResolver,
@@ -42,14 +45,13 @@ public sealed class ApplyFixAllTool
             else if (string.Equals(scope, "document", StringComparison.OrdinalIgnoreCase))
                 fixAllScope = FixAllScope.Document;
             else
-                return JsonSerializer.Serialize(
-                    new { error = "InvalidScope", message = $"Unknown scope '{scope}'. Use 'project' or 'document'." },
-                    JsonDefaults.Options);
+                return ToolErrors.Invalid($"Unknown scope '{scope}'. Use 'project' or 'document'.");
 
             if (fixAllScope == FixAllScope.Document && string.IsNullOrWhiteSpace(filePath))
-                return JsonSerializer.Serialize(
-                    new { error = "MissingFilePath", message = "filePath is required when scope='document'." },
-                    JsonDefaults.Options);
+                return ToolErrors.Invalid("filePath is required when scope='document'.");
+
+            if (!ProjectScope.RequireProjectFolder(projectPath, out var invalidMessage))
+                return ToolErrors.Invalid(invalidMessage!);
 
             string? warning = null;
             if (fixAllScope == FixAllScope.Project && !string.IsNullOrWhiteSpace(filePath))
@@ -69,7 +71,7 @@ public sealed class ApplyFixAllTool
             switch (result.Status)
             {
                 case FixAllStatus.NoDiagnosticsFound:
-                    return JsonSerializer.Serialize(new
+                    return ToolResults.Ok(new
                     {
                         applied = false,
                         dryRun,
@@ -77,26 +79,19 @@ public sealed class ApplyFixAllTool
                         diagnosticsFound = 0,
                         message = $"No occurrences of {diagnosticId} were found in the given scope.",
                         warning
-                    }, JsonDefaults.Options);
+                    });
 
-                case FixAllStatus.NoFixAvailable:
-                    return JsonSerializer.Serialize(new
-                    {
-                        error = "NoFixAvailable",
-                        message = $"No applicable code fix found for {diagnosticId}" +
-                            (equivalenceKey is not null ? $" with equivalence key '{equivalenceKey}'." : "."),
-                        diagnosticsFound = result.DiagnosticsFound
-                    }, JsonDefaults.Options);
+                case FixAllStatus.NotFound:
+                    var reason = result.NotFoundReason!.Value;
+                    return ToolErrors.NotFound(reason,
+                        ToolErrors.NotFoundMessage(reason, diagnosticId, filePath, equivalenceKey: equivalenceKey),
+                        filePath, diagnosticId,
+                        reason == FixNotFoundReason.NoFixForEquivalenceKey ? result.Candidates : null);
 
-                case FixAllStatus.AmbiguousFix:
-                    return JsonSerializer.Serialize(new
-                    {
-                        error = "AmbiguousFix",
-                        message = $"{diagnosticId} has multiple distinct fixes available. " +
-                            "Call get_fixes on one occurrence to see titles, then pass the desired equivalenceKey.",
-                        diagnosticsFound = result.DiagnosticsFound,
-                        availableEquivalenceKeys = result.AvailableEquivalenceKeys
-                    }, JsonDefaults.Options);
+                case FixAllStatus.Ambiguous:
+                    return ToolErrors.Ambiguous(
+                        $"{diagnosticId} has {result.Candidates.Count} distinct fixes. Pass one candidate's equivalenceKey verbatim.",
+                        result.Candidates, filePath, diagnosticId);
             }
 
             // Completed
@@ -128,7 +123,7 @@ public sealed class ApplyFixAllTool
 
             var unfixed = MergeUnfixed(result, conflicts);
 
-            return JsonSerializer.Serialize(new
+            return ToolResults.Ok(new
             {
                 applied = !dryRun && written.Count > 0,
                 dryRun,
@@ -141,11 +136,15 @@ public sealed class ApplyFixAllTool
                 message = conflictMessage,
                 unfixedDiagnostics = unfixed,
                 warning
-            }, JsonDefaults.Options);
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
+            return ToolErrors.Faulted(ex);
         }
     }
 

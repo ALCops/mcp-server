@@ -14,7 +14,7 @@ public sealed class AnalyzeTool
 
     [McpServerTool(Name = "analyze", ReadOnly = true),
      Description("Compile the AL workspace with all configured analyzers and return cop + compiler diagnostics as structured JSON. Wraps Microsoft's al_compile (onlyErrors=false, enableCodeAnalysis=true, no diagnostic cap) using the analyzers and ruleset the server passed to almcp at startup, then enriches each diagnostic with the owning analyzer ('CodeCop', 'ALCops.LinterCop', ..., or 'Compiler' for AL#### errors) and whether a native code fix exists (hasFix). Prefer this over al_compile or al_getdiagnostics whenever you want cop diagnostics: al_compile hides warnings unless you remember onlyErrors=false, and al_getdiagnostics never runs analyzers. Scope with filePath, folderPath or projectPath (combined with AND); filter with severities, analyzers, ruleIds; cap with limit (default 500). totalCount, truncated and summary always describe the full filtered set. Results are sorted by filePath, line, column. Scoping: without any scope argument, results are limited to the startup project. With filePath or folderPath and no projectPath, the file/folder is the only scope and analyzer/hasFix come from the analyzer configuration of the project that contains it (falling back to the startup project). The 'project' field names that project. Next steps: for a diagnostic with hasFix=true call get_fixes (then apply_fix) at its filePath/line/column/id, or apply_fix_all for every occurrence of one rule. After apply_fix / apply_fix_all, call analyze again to verify; almcp's file watcher normally sees the write first, but on slow file systems or right after a large apply_fix_all a second call may be needed before the fixed diagnostic disappears.")]
-    public static async Task<string> Analyze(
+    public static async Task<CallToolResult> Analyze(
         IServiceProvider services,
         ProjectAnalyzerResolver analyzerResolver,
         WorkspaceStartupResolver workspaceResolver,
@@ -29,16 +29,25 @@ public sealed class AnalyzeTool
     {
         try
         {
+            if (limit <= 0)
+                return ToolErrors.Invalid("limit must be a positive integer.");
+
             var proxy = services.GetService(typeof(AlMcpProxy)) as AlMcpProxy;
             if (proxy is null)
-                return Error("ProxyUnavailable",
+                return ToolErrors.Unavailable(UnavailableReason.NoProxy,
                     "analyze wraps the proxied al_compile, but this server runs with --no-proxy. " +
                     "Restart without --no-proxy to use analyze.");
 
-            if (!proxy.IsAvailable || !await proxy.Ready.WaitAsync(cancellationToken))
-                return Error("ProxyUnavailable",
-                    "MS AL MCP Server (almcp) is not available (not found in the DevTools directory, or it failed to start). " +
-                    "See the server log on stderr.");
+            // IsAvailable never changes and Ready never regresses from false to true, so these two
+            // checks are not racy; they are what tells "not installed" apart from "failed to start".
+            if (!proxy.IsAvailable)
+                return ToolErrors.Unavailable(UnavailableReason.AlmcpNotFound,
+                    "almcp was not found in the DevTools directory, so analyze (which wraps al_compile) is unavailable. " +
+                    "Install BC DevTools 17.0 or later; see the server log on stderr.");
+
+            if (!await proxy.Ready.WaitAsync(cancellationToken))
+                return ToolErrors.Unavailable(UnavailableReason.AlmcpNotReady,
+                    "almcp failed to start; see the server log on stderr.");
 
             var callerPassedProjectPath = projectPath is not null;
             var callerPassedFileOrFolder = filePath is not null || folderPath is not null;
@@ -48,39 +57,18 @@ public sealed class AnalyzeTool
             var normalizedFolderPath = folderPath is not null ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(folderPath)) : null;
 
             var scopePath = normalizedFilePath ?? normalizedFolderPath;
-            string? enrichmentProject;
-            if (callerPassedProjectPath)
-            {
-                enrichmentProject = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectPath!));
-
-                var knownProjects = workspaceResolver.Config.ProjectDirectories
-                    .Select(p => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p))).ToList();
-                if (!knownProjects.Contains(enrichmentProject, StringComparer.OrdinalIgnoreCase))
-                    return Error("UnknownProject",
-                        $"'{projectPath}' is not one of the AL projects this server was started with: " +
-                        $"{string.Join(", ", knownProjects)}. Pass one of those, or restart the server with --projects.");
-            }
-            else if (scopePath is not null)
-            {
-                enrichmentProject = CompileDiagnosticsParser.FindContainingProject(
-                    scopePath, workspaceResolver.Config.ProjectDirectories)
-                    ?? workspaceResolver.Config.PrimaryProject;
-            }
-            else
-            {
-                enrichmentProject = workspaceResolver.Config.PrimaryProject;
-            }
+            var config = workspaceResolver.Config;
+            string? invalidMessage = null;
+            var enrichmentProject = !callerPassedProjectPath && scopePath is not null
+                ? CompileDiagnosticsParser.FindContainingProject(scopePath, config.ProjectDirectories)
+                    ?? ProjectScope.Resolve(config, null, out invalidMessage)
+                : ProjectScope.Resolve(config, projectPath, out invalidMessage);
 
             if (enrichmentProject is null)
-                return Error("NoProject",
-                    "No AL project available. Pass projectPath, or start the server from a folder " +
-                    "containing app.json (or use --projects).");
+                return ToolErrors.Invalid(invalidMessage!);
 
             // Project filter applies when projectPath is explicit or when no file/folder scope was given.
             var projectScopeFilter = callerPassedFileOrFolder && !callerPassedProjectPath ? null : enrichmentProject;
-
-            if (limit <= 0)
-                return Error("InvalidLimit", "limit must be a positive integer.");
 
             HashSet<string>? severitySet = severities is { Length: > 0 }
                 ? new HashSet<string>(severities, StringComparer.OrdinalIgnoreCase) : null;
@@ -105,11 +93,7 @@ public sealed class AnalyzeTool
             var result = await proxy.ForwardAsync("al_compile", args, cancellationToken);
 
             if (result.IsError == true)
-            {
-                var errorMessage = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(b => b.Text));
-                return Error("ProxyCallFailed",
-                    "The proxied al_compile call failed (almcp may have exited, or its session was lost): " + errorMessage);
-            }
+                return MapProxyFailure(result);
 
             var (raw, message, succeeded) = CompileDiagnosticsParser.Parse(result);
             warnings.AddRange(CompileDiagnosticsParser.ExtractWarnings(message));
@@ -125,14 +109,24 @@ public sealed class AnalyzeTool
 
             var analyzeResult = CompileDiagnosticsParser.Build(enrichmentProject, sorted, limit, warnings);
 
-            return JsonSerializer.Serialize(analyzeResult, JsonDefaults.Options);
+            return ToolResults.Ok(analyzeResult);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return Error(ex.GetType().Name, ex.Message);
+            return ToolErrors.Faulted(ex);
         }
     }
 
-    private static string Error(string code, string message) =>
-        JsonSerializer.Serialize(new { error = code, message }, JsonDefaults.Options);
+    /// <summary>
+    /// Maps a failed proxied <c>al_compile</c> (almcp gone, session lost, or an error al_compile itself
+    /// reported) to <c>Unavailable/AlmcpCallFailed</c>, with the almcp text in <c>detail</c>.
+    /// </summary>
+    internal static CallToolResult MapProxyFailure(CallToolResult result) =>
+        ToolErrors.Unavailable(UnavailableReason.AlmcpCallFailed,
+            "The proxied al_compile call failed (almcp may have exited, its session was lost, or al_compile itself reported an error).",
+            string.Join('\n', result.Content.OfType<TextContentBlock>().Select(b => b.Text)));
 }

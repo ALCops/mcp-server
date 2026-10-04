@@ -1,3 +1,4 @@
+using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
 using Xunit;
@@ -31,22 +32,22 @@ public class ApplyFixToolTests
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
 
             // LC0020 (ApplicationAreaRedundancy) on the field-level ApplicationArea in MyPage.al.
-            // Hardcoded rather than discovered, matching GetFixes_RulesetSuppressesRule_ReturnsNoFixes.
+            // Hardcoded rather than discovered, matching GetFixes_RulesetSuppressesRule_ReturnsSuppressedByRuleset.
             const int line = 11, column = 17;
-            var fixes = await codeFixRunner.GetFixesAsync(
+            var lookup = await codeFixRunner.GetFixesAsync(
                 session, filePath, "LC0020", line, column, analyzerSet);
 
-            Assert.True(fixes.Count > 0,
-                $"Expected a fixable LC0020 at line {line}, column {column}. Loaded {analyzerSet.GetAllAnalyzers().Length} " +
+            Assert.True(lookup.NotFoundReason is null && lookup.Fixes.Count > 0,
+                $"Expected a fixable LC0020 at line {line}, column {column}, got {lookup.NotFoundReason}. Loaded {analyzerSet.GetAllAnalyzers().Length} " +
                 $"analyzer(s); warnings: {string.Join("; ", analyzerSet.Warnings)}. " +
                 "The fixture, the location, or the analyzer configuration may have changed.");
 
             var result = await ApplyFixTool.ApplyFix(
                 sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
                 tempProjectPath, filePath, "LC0020", line, column,
-                fixes[0].EquivalenceKey);
+                lookup.Fixes[0].EquivalenceKey);
 
-            Assert.Contains("\"applied\":true", result);
+            Assert.True(ToolResultAssert.Ok(result).GetProperty("applied").GetBoolean());
 
             // The actual regression assertion: the file on disk must have changed.
             var updatedContent = await File.ReadAllTextAsync(filePath);
@@ -77,9 +78,9 @@ public class ApplyFixToolTests
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
 
             const int line = 11, column = 17;
-            var fixes = await codeFixRunner.GetFixesAsync(
+            var lookup = await codeFixRunner.GetFixesAsync(
                 session, filePath, "LC0020", line, column, analyzerSet);
-            Assert.True(fixes.Count > 0, "Expected a fixable LC0020.");
+            Assert.True(lookup.Fixes.Count > 0, "Expected a fixable LC0020.");
 
             // External edit: append a comment as the final line. Line 11 stays valid.
             var content = await File.ReadAllTextAsync(filePath);
@@ -90,9 +91,9 @@ public class ApplyFixToolTests
             var result = await ApplyFixTool.ApplyFix(
                 sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
                 tempProjectPath, filePath, "LC0020", line, column,
-                fixes[0].EquivalenceKey);
+                lookup.Fixes[0].EquivalenceKey);
 
-            Assert.Contains("\"applied\":true", result);
+            Assert.True(ToolResultAssert.Ok(result).GetProperty("applied").GetBoolean());
 
             var finalContent = await File.ReadAllTextAsync(filePath);
             Assert.Contains("// edited", finalContent);
@@ -130,7 +131,7 @@ public class ApplyFixToolTests
 
             var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
 
-            Assert.Contains("\"applied\":true", result);
+            Assert.True(ToolResultAssert.Ok(result).GetProperty("applied").GetBoolean());
 
             var written = await File.ReadAllBytesAsync(filePath);
             Assert.Equal([0xEF, 0xBB, 0xBF], written.Take(3));
@@ -145,7 +146,7 @@ public class ApplyFixToolTests
     }
 
     [Fact]
-    public async Task ApplyFix_WriteFails_ReturnsIOExceptionAndLeavesFileIntact()
+    public async Task ApplyFix_WriteFails_ReturnsFaultedWriteFailedAndLeavesFileIntact()
     {
         var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-ioerr-test");
 
@@ -157,8 +158,11 @@ public class ApplyFixToolTests
             var writer = new GuardedFileWriter((_, _) => throw new IOException("injected move failure"));
             var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, writer);
 
-            Assert.Contains("\"error\":\"IOException\"", result);
-            Assert.Contains("injected move failure", result);
+            var root = ToolResultAssert.Error(result, "Faulted", "WriteFailed");
+            Assert.Equal("System.IO.IOException", root.GetProperty("detail").GetString());
+            Assert.Contains("injected move failure", root.GetProperty("message").GetString());
+            Assert.Equal(filePath, root.GetProperty("filePath").GetString());
+            Assert.Equal("LC0020", root.GetProperty("diagnosticId").GetString());
             Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
             Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
         }
@@ -169,7 +173,7 @@ public class ApplyFixToolTests
     }
 
     [Fact]
-    public async Task ApplyFix_FileNotValidUtf8_ReturnsUnsupportedEncodingAndLeavesFileIntact()
+    public async Task ApplyFix_FileNotValidUtf8_ReturnsFaultedUnsupportedEncodingAndLeavesFileIntact()
     {
         var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-cp1252-test");
 
@@ -184,8 +188,8 @@ public class ApplyFixToolTests
 
             var (result, _) = await ApplyLc0020Async(tempProjectPath, filePath, new GuardedFileWriter());
 
-            Assert.Contains("\"error\":\"UnsupportedEncoding\"", result);
-            Assert.Contains("not valid in its detected encoding (UTF-8;", result);
+            var root = ToolResultAssert.Error(result, "Faulted", "UnsupportedEncoding");
+            Assert.Contains("not valid in its detected encoding (UTF-8;", root.GetProperty("message").GetString());
             Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
             Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
         }
@@ -195,8 +199,135 @@ public class ApplyFixToolTests
         }
     }
 
+    [Fact]
+    public async Task ApplyFix_FileChangedButRefreshSkipsIt_ReturnsStaleAndWritesNothing()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-stale-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var codeFixRunner = new CodeFixRunner();
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            // Prime the session so the cached text is the original.
+            var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
+            var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
+            var lookup = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", 11, 17, analyzerSet);
+            Assert.True(lookup.Fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
+
+            // A same-length edit with the old timestamp: the refresh's length+mtime gate skips the
+            // file, so the fix is computed from the cached text and the guarded write must refuse it.
+            var stamp = File.GetLastWriteTimeUtc(filePath);
+            var content = await File.ReadAllTextAsync(filePath);
+            Assert.Contains("50100", content);
+            await File.WriteAllTextAsync(filePath, content.Replace("50100", "50109"));
+            File.SetLastWriteTimeUtc(filePath, stamp);
+            var editedBytes = await File.ReadAllBytesAsync(filePath);
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17, lookup.Fixes[0].EquivalenceKey);
+
+            var root = ToolResultAssert.Error(result, "Stale");
+            Assert.Equal(filePath, root.GetProperty("filePath").GetString());
+            Assert.Equal("LC0020", root.GetProperty("diagnosticId").GetString());
+            Assert.False(root.TryGetProperty("reason", out _));
+            Assert.Equal(editedBytes, await File.ReadAllBytesAsync(filePath));
+            Assert.Empty(Directory.GetFiles(tempProjectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_UnknownEquivalenceKey_ReturnsNotFoundWithCandidates()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-badkey-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var originalBytes = await File.ReadAllBytesAsync(filePath);
+
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, new CodeFixRunner(), analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17, "no-such-key");
+
+            var root = ToolResultAssert.Error(result, "NotFound", "NoFixForEquivalenceKey");
+            var candidates = root.GetProperty("candidates").EnumerateArray().ToList();
+            Assert.NotEmpty(candidates);
+            Assert.All(candidates, c =>
+            {
+                Assert.True(c.TryGetProperty("equivalenceKey", out _));
+                Assert.False(string.IsNullOrEmpty(c.GetProperty("title").GetString()));
+                Assert.False(string.IsNullOrEmpty(c.GetProperty("providerName").GetString()));
+            });
+            Assert.Contains("no-such-key", root.GetProperty("message").GetString());
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_RuleWithoutFixProvider_ReturnsNotFoundNoFixProvider()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-noprovider-test");
+
+        try
+        {
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, new CodeFixRunner(), analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, Path.Combine(tempProjectPath, "MyPage.al"), "ZZ9999", 11, 17, "any");
+
+            var root = ToolResultAssert.Error(result, "NotFound", "NoFixProvider");
+            Assert.False(root.TryGetProperty("candidates", out _));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_FolderWithoutAppJson_ReturnsInvalid()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"alcops-applyfix-noappjson-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+
+        try
+        {
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, new CodeFixRunner(), analyzerResolver, new GuardedFileWriter(),
+                folder, Path.Combine(folder, "MyPage.al"), "LC0020", 11, 17, "any");
+
+            var root = ToolResultAssert.Error(result, "Invalid");
+            Assert.Contains("app.json", root.GetProperty("message").GetString());
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(folder);
+        }
+    }
+
     /// <summary>Loads the project, finds the LC0020 fix at MyPage.al:11:17 and applies it through the tool.</summary>
-    private static async Task<(string Result, string EquivalenceKey)> ApplyLc0020Async(
+    private static async Task<(ModelContextProtocol.Protocol.CallToolResult Result, string EquivalenceKey)> ApplyLc0020Async(
         string projectPath, string filePath, GuardedFileWriter writer)
     {
         using var sessionManager = new ProjectSessionManager(new ProjectLoader());
@@ -207,23 +338,23 @@ public class ApplyFixToolTests
         var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, null);
 
         const int line = 11, column = 17;
-        var fixes = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", line, column, analyzerSet);
-        Assert.True(fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
+        var lookup = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", line, column, analyzerSet);
+        Assert.True(lookup.Fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
 
         var result = await ApplyFixTool.ApplyFix(
             sessionManager, codeFixRunner, analyzerResolver, writer,
             projectPath, filePath, "LC0020", line, column,
-            fixes[0].EquivalenceKey);
+            lookup.Fixes[0].EquivalenceKey);
 
-        return (result, fixes[0].EquivalenceKey);
+        return (result, lookup.Fixes[0].EquivalenceKey);
     }
 
     [Fact]
-    public async Task GetFixes_RulesetSuppressesRule_ReturnsNoFixes()
+    public async Task GetFixes_RulesetSuppressesRule_ReturnsSuppressedByRuleset()
     {
         // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None". Even though
-        // PageA.al still has a redundant ApplicationArea, get_fixes must not offer a fix for it
-        // (CodeFixRunner.FindDiagnosticAsync must honor ruleset suppression).
+        // PageA.al still has a redundant ApplicationArea, get_fixes must not offer a fix for it,
+        // and must say the ruleset is why.
         var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("FixAllRulesetProject", "alcops-ruleset-getfixes-test");
 
         try
@@ -241,18 +372,19 @@ public class ApplyFixToolTests
             // (not a location mismatch) is what suppresses the result below.
             const int line = 11, column = 17;
             var withoutRuleset = TestAnalyzers.LoadAnalyzersWithoutRuleset(loader, tempProjectPath);
-            var controlFixes = await codeFixRunner.GetFixesAsync(
+            var control = await codeFixRunner.GetFixesAsync(
                 session, filePath, "LC0020", line, column, withoutRuleset);
-            Assert.True(controlFixes.Count > 0,
+            Assert.True(control.NotFoundReason is null && control.Fixes.Count > 0,
                 "Expected a fixable LC0020 at line 11, column 17 with no ruleset applied — fixture or location may have changed.");
 
             // With the resolved AnalyzerSet (loads FixAllRulesetProject's custom.ruleset.json,
             // which sets LC0020 to "None"), the same location must yield no fixes.
             var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
-            var fixes = await codeFixRunner.GetFixesAsync(
+            var lookup = await codeFixRunner.GetFixesAsync(
                 session, filePath, "LC0020", line, column, analyzerSet);
 
-            Assert.Empty(fixes);
+            Assert.Equal(FixNotFoundReason.SuppressedByRuleset, lookup.NotFoundReason);
+            Assert.Empty(lookup.Fixes);
         }
         finally
         {

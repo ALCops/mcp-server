@@ -47,14 +47,13 @@ public class ApplyFixAllToolTests
     {
         using var ctx = new TestContext();
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Ok(result);
 
-        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(2, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Empty(root.GetProperty("conflicts").EnumerateArray());
 
@@ -90,14 +89,13 @@ public class ApplyFixAllToolTests
         using var ctx = new TestContext();
         var pageAPath = Path.Combine(ctx.ProjectPath, "PageA.al");
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageAPath);
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Ok(result);
 
-        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(1, root.GetProperty("diagnosticsFound").GetInt32());
 
         var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
@@ -116,14 +114,13 @@ public class ApplyFixAllToolTests
         var originalPageA = ctx.ReadFile("PageA.al");
         var originalPageB = ctx.ReadFile("PageB.al");
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", dryRun: true);
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Ok(result);
 
-        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.False(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.True(root.GetProperty("dryRun").GetBoolean());
         Assert.Equal(2, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Equal(2, root.GetProperty("filesChanged").GetArrayLength());
@@ -138,19 +135,81 @@ public class ApplyFixAllToolTests
     {
         using var ctx = new TestContext();
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "AC0012");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Error(result, "Ambiguous");
+        Assert.False(root.TryGetProperty("reason", out _));
+        Assert.Equal("AC0012", root.GetProperty("diagnosticId").GetString());
 
-        Assert.Equal("AmbiguousFix", root.GetProperty("error").GetString());
-        var keys = root.GetProperty("availableEquivalenceKeys").EnumerateArray().Select(e => e.GetString()).ToArray();
-        Assert.True(keys.Length > 1, resultJson);
+        var candidates = root.GetProperty("candidates").EnumerateArray().ToArray();
+        Assert.True(candidates.Length > 1, ToolResultAssert.Text(result));
+        Assert.All(candidates, c =>
+        {
+            Assert.Equal(JsonValueKind.String, c.GetProperty("equivalenceKey").ValueKind);
+            Assert.False(string.IsNullOrEmpty(c.GetProperty("title").GetString()));
+            Assert.False(string.IsNullOrEmpty(c.GetProperty("providerName").GetString()));
+        });
+
+        var keys = candidates.Select(c => c.GetProperty("equivalenceKey").GetString()).ToArray();
+        Assert.Equal(keys.Length, keys.Distinct(StringComparer.Ordinal).Count());
 
         // The codeunit must be untouched since no fix was chosen or applied.
         Assert.Contains("Access = Internal;", ctx.ReadFile("Codeunit.al"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_UnknownEquivalenceKey_ReturnsNotFoundWithCandidates()
+    {
+        using var ctx = new TestContext();
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "AC0012", equivalenceKey: "no-such-key");
+
+        var root = ToolResultAssert.Error(result, "NotFound", "NoFixForEquivalenceKey");
+        Assert.True(root.GetProperty("candidates").GetArrayLength() > 1, ToolResultAssert.Text(result));
+        Assert.False(root.TryGetProperty("diagnosticsFound", out _));
+        Assert.Contains("Access = Internal;", ctx.ReadFile("Codeunit.al"));
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_RuleWithoutFixProvider_ReturnsNotFoundNoFixProvider()
+    {
+        using var ctx = new TestContext();
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "ZZ9999");
+
+        ToolResultAssert.Error(result, "NotFound", "NoFixProvider");
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_UnknownScope_ReturnsInvalid()
+    {
+        using var ctx = new TestContext();
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", scope: "workspace");
+
+        var root = ToolResultAssert.Error(result, "Invalid");
+        Assert.Contains("workspace", root.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_DocumentScopeWithoutFilePath_ReturnsInvalid()
+    {
+        using var ctx = new TestContext();
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", scope: "document");
+
+        var root = ToolResultAssert.Error(result, "Invalid");
+        Assert.Contains("filePath", root.GetProperty("message").GetString());
     }
 
     [Fact]
@@ -159,14 +218,13 @@ public class ApplyFixAllToolTests
         using var ctx = new TestContext();
         var pageCPath = Path.Combine(ctx.ProjectPath, "PageC.al");
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageCPath);
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Ok(result);
 
-        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.False(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
     }
 
@@ -187,13 +245,12 @@ public class ApplyFixAllToolTests
         await File.WriteAllTextAsync(pageBPath, pageBContent.Replace("OtherField", "RenamedField"));
 
         // Apply for real — the refresh must pick up the rename.
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
-        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        var root = ToolResultAssert.Ok(result);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
 
         // PageB must still contain the externally-renamed field AND have exactly one ApplicationArea.
         var pageBFinal = ctx.ReadFile("PageB.al");
@@ -217,13 +274,12 @@ public class ApplyFixAllToolTests
             .Replace("PageB", "PageD");
         await File.WriteAllTextAsync(Path.Combine(ctx.ProjectPath, "PageD.al"), pageDContent);
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
-        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        var root = ToolResultAssert.Ok(result);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
 
         var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
@@ -244,13 +300,12 @@ public class ApplyFixAllToolTests
         // Delete PageB.al — only PageA still has LC0020.
         File.Delete(Path.Combine(ctx.ProjectPath, "PageB.al"));
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
-        Assert.True(root.GetProperty("applied").GetBoolean(), resultJson);
+        var root = ToolResultAssert.Ok(result);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(1, root.GetProperty("diagnosticsFound").GetInt32());
 
         var filesChanged = root.GetProperty("filesChanged").EnumerateArray()
@@ -260,7 +315,7 @@ public class ApplyFixAllToolTests
     }
 
     [Fact]
-    public async Task ApplyFixAll_RulesetSuppressesRule_TreatsItAsZeroDiagnostics()
+    public async Task ApplyFixAll_RulesetSuppressesRule_ReturnsNotFoundSuppressedByRuleset()
     {
         // FixAllRulesetProject ships a custom.ruleset.json setting LC0020 to "None",
         // even though PageA.al contains a redundant ApplicationArea occurrence.
@@ -268,15 +323,12 @@ public class ApplyFixAllToolTests
         var pageAPath = Path.Combine(ctx.ProjectPath, "PageA.al");
         var originalPageA = ctx.ReadFile("PageA.al");
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020", scope: "document", filePath: pageAPath);
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
-
-        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
-        Assert.Equal(0, root.GetProperty("diagnosticsFound").GetInt32());
+        var root = ToolResultAssert.Error(result, "NotFound", "SuppressedByRuleset");
+        Assert.Equal("LC0020", root.GetProperty("diagnosticId").GetString());
         Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
     }
 
@@ -311,13 +363,13 @@ public class ApplyFixAllToolTests
         var pageBPath = Path.Combine(ctx.ProjectPath, "PageB.al");
         await File.WriteAllBytesAsync(pageBPath, [0xEF, 0xBB, 0xBF, .. await File.ReadAllBytesAsync(pageBPath)]);
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        Assert.True(doc.RootElement.GetProperty("applied").GetBoolean(), resultJson);
-        Assert.Equal(2, doc.RootElement.GetProperty("filesChanged").GetArrayLength());
+        var root = ToolResultAssert.Ok(result);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
+        Assert.Equal(2, root.GetProperty("filesChanged").GetArrayLength());
 
         var pageB = await File.ReadAllBytesAsync(pageBPath);
         Assert.Equal([0xEF, 0xBB, 0xBF], pageB.Take(3));
@@ -344,14 +396,13 @@ public class ApplyFixAllToolTests
 
         ctx.Writer = GuardedFileWriterTests.FailingOnCalls(2);
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        var root = doc.RootElement;
+        var root = ToolResultAssert.Ok(result);
 
-        Assert.False(root.GetProperty("applied").GetBoolean(), resultJson);
+        Assert.False(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Empty(root.GetProperty("filesChanged").EnumerateArray());
 
@@ -385,12 +436,12 @@ public class ApplyFixAllToolTests
     {
         using var ctx = new TestContext();
 
-        var resultJson = await ApplyFixAllTool.ApplyFixAll(
+        var result = await ApplyFixAllTool.ApplyFixAll(
             ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
             ctx.ProjectPath, "LC0020");
 
-        using var doc = JsonDocument.Parse(resultJson);
-        Assert.True(doc.RootElement.GetProperty("applied").GetBoolean(), resultJson);
+        var root = ToolResultAssert.Ok(result);
+        Assert.True(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Empty(TempFiles(ctx.ProjectPath));
     }
 

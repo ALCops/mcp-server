@@ -1,6 +1,7 @@
 using System.ComponentModel;
-using System.Text.Json;
+using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace ALCops.Mcp.Tools;
@@ -9,8 +10,12 @@ namespace ALCops.Mcp.Tools;
 public sealed class GetFixesTool
 {
     [McpServerTool(Name = "get_fixes", ReadOnly = true),
-     Description("Get available code fixes for a specific diagnostic at a location. Returns fix titles and equivalence keys needed by apply_fix.")]
-    public static async Task<string> GetFixes(
+     Description("Get available code fixes for a specific diagnostic at a location. " +
+        "Returns { diagnosticId, filePath, line, column, fixes: [{ equivalenceKey, title, providerName }] }; " +
+        "pass a fix's equivalenceKey verbatim to apply_fix (or apply_fix_all). fixes is never empty. " +
+        "When nothing matches, returns the error NotFound with a reason: NoDiagnosticAtPosition (re-run analyze and use its line/column), " +
+        "SuppressedByRuleset or SuppressedByPragma (nothing to fix), NoFixProvider, NoAnalyzerForRule, FileNotInProject or NoFixForDiagnostic.")]
+    public static async Task<CallToolResult> GetFixes(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
         ProjectAnalyzerResolver analyzerResolver,
@@ -24,19 +29,32 @@ public sealed class GetFixesTool
     {
         try
         {
+            if (!ProjectScope.RequireProjectFolder(projectPath, out var invalidMessage))
+                return ToolErrors.Invalid(invalidMessage!);
+
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
             var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
             var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
 
-            var fixes = await codeFixRunner.GetFixesAsync(
+            var lookup = await codeFixRunner.GetFixesAsync(
                 session, filePath, diagnosticId, line, column, analyzerSet, cancellationToken);
 
-            return JsonSerializer.Serialize(fixes, JsonDefaults.Options);
+            if (lookup.NotFoundReason is { } reason)
+                return ToolErrors.NotFound(reason,
+                    ToolErrors.NotFoundMessage(reason, diagnosticId, filePath, line, column),
+                    filePath, diagnosticId);
+
+            return ToolResults.Ok(new GetFixesResult(
+                diagnosticId, Path.GetFullPath(filePath), line, column, lookup.Fixes));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            return JsonSerializer.Serialize(new { error = ex.GetType().Name, message = ex.Message }, JsonDefaults.Options);
+            return ToolErrors.Faulted(ex);
         }
     }
 }

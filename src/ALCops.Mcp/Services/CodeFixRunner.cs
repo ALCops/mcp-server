@@ -12,9 +12,9 @@ namespace ALCops.Mcp.Services;
 public sealed class CodeFixRunner
 {
     /// <summary>
-    /// Gets available code fixes for a specific diagnostic at a location.
+    /// Gets available code fixes for a specific diagnostic at a location, or the reason there are none.
     /// </summary>
-    public async Task<IReadOnlyList<CodeFixInfo>> GetFixesAsync(
+    public async Task<FixLookupResult> GetFixesAsync(
         ProjectSession session,
         string filePath,
         string diagnosticId,
@@ -23,52 +23,23 @@ public sealed class CodeFixRunner
         IAnalyzerProvider analyzerProvider,
         CancellationToken ct = default)
     {
-        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
-        if (providers.IsEmpty)
-            return [];
+        var (located, notFound) = await LocateAsync(session, filePath, diagnosticId, line, column, analyzerProvider, ct);
+        if (notFound is { } reason)
+            return FixLookupResult.NotFound(reason);
 
-        var document = session.GetDocument(filePath);
-        if (document is null)
-            return [];
+        var (document, diagnostic, providers) = located!.Value;
+        var pairs = await CollectActionsAsync(providers, document, diagnostic, ct);
+        if (pairs.Count == 0)
+            return FixLookupResult.NotFound(FixNotFoundReason.NoFixForDiagnostic);
 
-        // Find the diagnostic at the specified location
-        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, analyzerProvider);
-        if (diagnostic is null)
-            return [];
-
-        // Collect code actions from all providers
-        var fixes = new List<CodeFixInfo>();
-
-        foreach (var fixProvider in providers)
-        {
-            var actions = new List<CodeAction>();
-
-            var context = new CodeFixContext(
-                document,
-                diagnostic.Location.SourceSpan,
-                ImmutableArray.Create(diagnostic),
-                (action, _) => actions.Add(action),
-                ct);
-
-            await fixProvider.RegisterCodeFixesAsync(context);
-
-            foreach (var action in actions)
-            {
-                fixes.Add(new CodeFixInfo(
-                    Title: action.Title,
-                    EquivalenceKey: action.EquivalenceKey ?? "",
-                    DiagnosticId: diagnosticId,
-                    ProviderName: fixProvider.GetType().Name));
-            }
-        }
-
-        return fixes;
+        return FixLookupResult.Found([.. pairs.Select(p => ToInfo(p.Provider, p.Action))]);
     }
 
     /// <summary>
-    /// Applies a specific code fix and returns the modified content without writing to disk.
+    /// Applies a specific code fix and returns the modified content without writing to disk, or the
+    /// reason no fix applies.
     /// </summary>
-    public async Task<CodeFixResult?> ApplyFixAsync(
+    public async Task<FixApplyResult> ApplyFixAsync(
         ProjectSession session,
         string filePath,
         string diagnosticId,
@@ -78,41 +49,23 @@ public sealed class CodeFixRunner
         IAnalyzerProvider analyzerProvider,
         CancellationToken ct = default)
     {
-        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
-        if (providers.IsEmpty)
-            return null;
+        var (located, notFound) = await LocateAsync(session, filePath, diagnosticId, line, column, analyzerProvider, ct);
+        if (notFound is { } reason)
+            return FixApplyResult.NotFound(reason);
 
-        var document = session.GetDocument(filePath);
-        if (document is null)
-            return null;
+        var (document, diagnostic, providers) = located!.Value;
+        var pairs = await CollectActionsAsync(providers, document, diagnostic, ct);
+        if (pairs.Count == 0)
+            return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic);
 
-        // Find the diagnostic
-        var diagnostic = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, analyzerProvider);
-        if (diagnostic is null)
-            return null;
+        var matching = pairs.Where(p => KeyOf(p.Action) == equivalenceKey).ToList();
+        if (matching.Count == 0)
+            return FixApplyResult.NotFound(FixNotFoundReason.NoFixForEquivalenceKey, ToCandidates(pairs));
 
-        // Find the matching code action
-        foreach (var fixProvider in providers)
+        var originalText = (await document.GetTextAsync(ct)).ToString();
+
+        foreach (var (_, matchingAction) in matching)
         {
-            var actions = new List<CodeAction>();
-
-            var context = new CodeFixContext(
-                document,
-                diagnostic.Location.SourceSpan,
-                ImmutableArray.Create(diagnostic),
-                (action, _) => actions.Add(action),
-                ct);
-
-            await fixProvider.RegisterCodeFixesAsync(context);
-
-            var matchingAction = actions.FirstOrDefault(a =>
-                string.Equals(a.EquivalenceKey, equivalenceKey, StringComparison.Ordinal));
-
-            if (matchingAction is null)
-                continue;
-
-            var originalText = (await document.GetTextAsync(ct)).ToString();
-
             // Apply the code action to get the modified document
             var operations = await matchingAction.GetOperationsAsync(ct);
 
@@ -128,16 +81,99 @@ public sealed class CodeFixRunner
                     var newText = await changedDocument.GetTextAsync(ct);
                     var modifiedContent = newText?.ToString() ?? "";
 
-                    return new CodeFixResult(
+                    return FixApplyResult.Applied(new CodeFixResult(
                         FilePath: filePath,
                         OriginalContent: originalText,
                         ModifiedContent: modifiedContent,
-                        FixTitle: matchingAction.Title);
+                        FixTitle: matchingAction.Title));
                 }
             }
         }
 
-        return null;
+        // The key matched, but no matching action changes this document.
+        return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic);
+    }
+
+    /// <summary>
+    /// The equivalence key a caller sees and passes back. A null key is advertised as <c>""</c>, so
+    /// every comparison goes through this too; otherwise a null-key action could never be selected.
+    /// </summary>
+    private static string KeyOf(CodeAction action) => action.EquivalenceKey ?? "";
+
+    private static CodeFixInfo ToInfo(CodeFixProvider provider, CodeAction action) =>
+        new(KeyOf(action), action.Title, provider.GetType().Name);
+
+    /// <summary>
+    /// One candidate per distinct equivalence key, in registration order. When two providers (or two
+    /// actions) share a key, the first occurrence wins: that is also the one a key match selects.
+    /// </summary>
+    private static IReadOnlyList<CodeFixInfo> ToCandidates(IEnumerable<(CodeFixProvider Provider, CodeAction Action)> pairs) =>
+        [.. pairs
+            .GroupBy(p => KeyOf(p.Action), StringComparer.Ordinal)
+            .Select(g => ToInfo(g.First().Provider, g.First().Action))];
+
+    /// <summary>True when the project ruleset sets <paramref name="diagnosticId"/> to <c>None</c>.</summary>
+    private static bool IsRulesetSuppressed(IAnalyzerProvider provider, string diagnosticId) =>
+        provider is AnalyzerSet { RuleActions: var ruleActions } && RulesetFilter.IsSuppressed(ruleActions, diagnosticId, out _);
+
+    /// <summary>
+    /// The shared front half of get_fixes and apply_fix: a fix provider, the document, no ruleset
+    /// suppression, and the diagnostic at the position, in that order. Returns the first failing reason.
+    /// </summary>
+    private static async Task<((Document Document, Diagnostic Diagnostic, ImmutableArray<CodeFixProvider> Providers)? Located, FixNotFoundReason? NotFound)> LocateAsync(
+        ProjectSession session,
+        string filePath,
+        string diagnosticId,
+        int line,
+        int column,
+        IAnalyzerProvider analyzerProvider,
+        CancellationToken ct)
+    {
+        var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
+        if (providers.IsEmpty)
+            return (null, FixNotFoundReason.NoFixProvider);
+
+        var document = session.GetDocument(filePath);
+        if (document is null)
+            return (null, FixNotFoundReason.FileNotInProject);
+
+        if (IsRulesetSuppressed(analyzerProvider, diagnosticId))
+            return (null, FixNotFoundReason.SuppressedByRuleset);
+
+        var lookup = await FindDiagnosticAsync(session, document, diagnosticId, line, column, ct, analyzerProvider);
+        if (lookup.Reason is { } reason)
+            return (null, reason);
+
+        return ((document, lookup.Diagnostic!, providers), null);
+    }
+
+    /// <summary>Every code action every provider registers for <paramref name="diagnostic"/>, in provider order.</summary>
+    private static async Task<List<(CodeFixProvider Provider, CodeAction Action)>> CollectActionsAsync(
+        ImmutableArray<CodeFixProvider> providers,
+        Document document,
+        Diagnostic diagnostic,
+        CancellationToken ct)
+    {
+        var pairs = new List<(CodeFixProvider Provider, CodeAction Action)>();
+
+        foreach (var fixProvider in providers)
+        {
+            var actions = new List<CodeAction>();
+
+            var context = new CodeFixContext(
+                document,
+                diagnostic.Location.SourceSpan,
+                ImmutableArray.Create(diagnostic),
+                (action, _) => actions.Add(action),
+                ct);
+
+            await fixProvider.RegisterCodeFixesAsync(context);
+
+            foreach (var action in actions)
+                pairs.Add((fixProvider, action));
+        }
+
+        return pairs;
     }
 
     /// <summary>
@@ -158,7 +194,11 @@ public sealed class CodeFixRunner
     {
         var providers = analyzerProvider.GetCodeFixProvidersForDiagnostic(diagnosticId);
         if (providers.IsEmpty)
-            return NoFixAvailable(diagnosticId);
+            return NotFound(diagnosticId, FixNotFoundReason.NoFixProvider);
+
+        // Checked up front so a suppressed rule is reported as such rather than as zero occurrences.
+        if (IsRulesetSuppressed(analyzerProvider, diagnosticId))
+            return NotFound(diagnosticId, FixNotFoundReason.SuppressedByRuleset);
 
         var normalizedFilePath = filePath is null ? null : Path.GetFullPath(filePath);
 
@@ -184,34 +224,30 @@ public sealed class CodeFixRunner
         }
 
         if (candidateActions.Count == 0)
-            return NoFixAvailable(diagnosticId, diagnostics.Length);
+            return NotFound(diagnosticId, FixNotFoundReason.NoFixForDiagnostic, diagnostics.Length);
 
         (CodeFixProvider Provider, CodeAction Action) chosen;
         if (equivalenceKey is not null)
         {
-            var match = candidateActions.FirstOrDefault(c =>
-                string.Equals(c.Action.EquivalenceKey, equivalenceKey, StringComparison.Ordinal));
+            var match = candidateActions.FirstOrDefault(c => KeyOf(c.Action) == equivalenceKey);
             if (match.Action is null)
-                return NoFixAvailable(diagnosticId, diagnostics.Length);
+                return NotFound(diagnosticId, FixNotFoundReason.NoFixForEquivalenceKey, diagnostics.Length,
+                    ToCandidates(candidateActions));
             chosen = match;
         }
         else
         {
-            var distinctKeys = candidateActions
-                .Select(c => c.Action.EquivalenceKey ?? "")
-                .Distinct(StringComparer.Ordinal)
-                .ToList();
-
-            if (distinctKeys.Count > 1)
+            var candidates = ToCandidates(candidateActions);
+            if (candidates.Count > 1)
                 return new FixAllResult(
-                    FixAllStatus.AmbiguousFix, diagnosticId, diagnostics.Length,
-                    null, null, [], distinctKeys, []);
+                    FixAllStatus.Ambiguous, diagnosticId, diagnostics.Length,
+                    null, null, [], candidates, []);
 
             chosen = candidateActions[0];
         }
 
         var fixProviderInstance = chosen.Provider;
-        var chosenKey = chosen.Action.EquivalenceKey ?? "";
+        var chosenKey = KeyOf(chosen.Action);
         var fixTitle = chosen.Action.Title;
 
         var project = session.GetProject();
@@ -304,8 +340,9 @@ public sealed class CodeFixRunner
             changes, [], unfixed);
     }
 
-    private static FixAllResult NoFixAvailable(string diagnosticId, int diagnosticsFound = 0) =>
-        new(FixAllStatus.NoFixAvailable, diagnosticId, diagnosticsFound, null, null, [], [], []);
+    private static FixAllResult NotFound(
+        string diagnosticId, FixNotFoundReason reason, int diagnosticsFound = 0, IReadOnlyList<CodeFixInfo>? candidates = null) =>
+        new(FixAllStatus.NotFound, diagnosticId, diagnosticsFound, null, null, [], candidates ?? [], [], reason);
 
     /// <summary>
     /// Applies fixes to a single document one diagnostic at a time, in descending source-position
@@ -330,8 +367,7 @@ public sealed class CodeFixRunner
 
             await fixProvider.RegisterCodeFixesAsync(context);
 
-            var match = actions.FirstOrDefault(a =>
-                string.Equals(a.EquivalenceKey, equivalenceKey, StringComparison.Ordinal));
+            var match = actions.FirstOrDefault(a => KeyOf(a) == equivalenceKey);
             if (match is null)
                 continue;
 
@@ -467,7 +503,13 @@ public sealed class CodeFixRunner
             Task.FromResult(_all.Where(d => diagnosticIds.Contains(d.Id)));
     }
 
-    private static async Task<Diagnostic?> FindDiagnosticAsync(
+    /// <summary>
+    /// Finds the diagnostic at a position, or says why there is none. Ruleset suppression is checked by
+    /// the caller before analysis; pragma suppression is detected here, which relies on
+    /// <c>GetEffectiveDiagnostics</c> keeping pragma-suppressed diagnostics with <c>IsSuppressed = true</c>
+    /// rather than dropping them.
+    /// </summary>
+    private static async Task<DiagnosticLookup> FindDiagnosticAsync(
         ProjectSession session,
         Document document,
         string diagnosticId,
@@ -484,7 +526,7 @@ public sealed class CodeFixRunner
             .ToImmutableArray();
 
         if (analyzers.IsEmpty)
-            return null;
+            return new DiagnosticLookup(null, FixNotFoundReason.NoAnalyzerForRule);
 
         var compilationWithAnalyzers = new CompilationWithAnalyzers(
             compilation, analyzers, null!, ct);
@@ -495,19 +537,32 @@ public sealed class CodeFixRunner
         var effectiveDiagnostics = CompilationWithAnalyzers
             .GetEffectiveDiagnostics(rawDiagnostics, compilation);
 
-        // Apply ruleset suppression (RuleAction.None)
-        var ruleActions = provider is AnalyzerSet analyzerSet ? analyzerSet.RuleActions : null;
-
-        // Filter to the target file and diagnostic ID
+        // Filter to the target file and diagnostic ID. Suppressed diagnostics are kept here so a
+        // pragma-suppressed hit can be told apart from no hit at all.
         var documentPath = document.FilePath ?? "";
         var diagnostics = effectiveDiagnostics
-            .Where(d => !d.IsSuppressed && !RulesetFilter.IsSuppressed(ruleActions, d.Id, out _))
             .Where(d => d.Id == diagnosticId
                 && d.Location.SourceTree?.FilePath is string fp
                 && Path.GetFullPath(fp).Equals(Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
             .ToImmutableArray();
 
-        // Find the diagnostic at or near the specified line/column (1-based input)
+        if (AtPosition(diagnostics.Where(d => !d.IsSuppressed), line, column) is { } hit)
+            return new DiagnosticLookup(hit, null);
+
+        if (AtPosition(diagnostics.Where(d => d.IsSuppressed), line, column) is not null)
+            return new DiagnosticLookup(null, FixNotFoundReason.SuppressedByPragma);
+
+        return new DiagnosticLookup(null, FixNotFoundReason.NoDiagnosticAtPosition);
+    }
+
+    /// <summary>
+    /// The diagnostic starting exactly at the 1-based <paramref name="line"/>/<paramref name="column"/>,
+    /// or else the first one starting on that line.
+    /// </summary>
+    private static Diagnostic? AtPosition(IEnumerable<Diagnostic> candidates, int line, int column)
+    {
+        var diagnostics = candidates.ToList();
+
         return diagnostics.FirstOrDefault(d =>
         {
             var lineSpan = d.Location.GetLineSpan();

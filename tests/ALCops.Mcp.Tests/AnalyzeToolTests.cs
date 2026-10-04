@@ -4,6 +4,7 @@ using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Xunit;
 using Xunit.Abstractions;
@@ -12,26 +13,26 @@ namespace ALCops.Mcp.Tests;
 
 public sealed class AnalyzeToolTests
 {
-    [Fact]
-    public async Task ProxyUnavailable_WhenNoProxy()
-    {
-        var services = new ServiceCollection().BuildServiceProvider();
-        var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
-        var resolver = new WorkspaceStartupResolver(
-            analyzerResolver,
+    private static WorkspaceStartupResolver DummyResolver(ProjectAnalyzerResolver analyzerResolver) =>
+        new(analyzerResolver,
             new ExternalAnalyzerLoader(TestAnalyzers.ToolsLocator),
             NullLogger<WorkspaceStartupResolver>.Instance,
             ["C:\\dummy"]);
 
-        var json = await AnalyzeTool.Analyze(services, analyzerResolver, resolver);
-        var doc = JsonDocument.Parse(json);
+    [Fact]
+    public async Task Unavailable_NoProxy_WhenServerRunsWithNoProxy()
+    {
+        var services = new ServiceCollection().BuildServiceProvider();
+        var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
 
-        Assert.Equal("ProxyUnavailable", doc.RootElement.GetProperty("error").GetString());
-        Assert.Contains("--no-proxy", doc.RootElement.GetProperty("message").GetString());
+        var result = await AnalyzeTool.Analyze(services, analyzerResolver, DummyResolver(analyzerResolver));
+
+        var root = ToolResultAssert.Error(result, "Unavailable", "NoProxy");
+        Assert.Contains("--no-proxy", root.GetProperty("message").GetString());
     }
 
     [Fact]
-    public async Task ProxyUnavailable_WhenAlmcpNotFound()
+    public async Task Unavailable_AlmcpNotFound_WhenToolsDirHasNoAlmcp()
     {
         var toolsDir = Path.Combine(Path.GetTempPath(), $"alcops-noalmcp-analyze-{Guid.NewGuid():N}");
         Directory.CreateDirectory(toolsDir);
@@ -55,16 +56,114 @@ public sealed class AnalyzeToolTests
             sc.AddSingleton(proxy);
             var sp = sc.BuildServiceProvider();
 
-            var json = await AnalyzeTool.Analyze(sp, analyzerResolver, resolver);
-            var doc = JsonDocument.Parse(json);
+            var result = await AnalyzeTool.Analyze(sp, analyzerResolver, resolver);
 
-            Assert.Equal("ProxyUnavailable", doc.RootElement.GetProperty("error").GetString());
-            Assert.Contains("not available", doc.RootElement.GetProperty("message").GetString());
+            var root = ToolResultAssert.Error(result, "Unavailable", "AlmcpNotFound");
+            Assert.Contains("not found", root.GetProperty("message").GetString());
         }
         finally
         {
             TestAnalyzers.TryDeleteDirectory(toolsDir);
         }
+    }
+
+    [Fact]
+    public async Task Unavailable_AlmcpNotReady_WhenAlmcpStopped()
+    {
+        var toolsDir = CreateStubToolsDirWithAlmcp();
+
+        try
+        {
+            var locator = new BcToolsLocator(toolsDir);
+            Assert.True(locator.HasAlMcp);
+
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+            var resolver = DummyResolver(analyzerResolver);
+
+            // Never started; disposing completes Ready with false, as a failed start does.
+            var proxy = new AlMcpProxy(locator, resolver, new CapturingLogger());
+            await proxy.DisposeAsync();
+
+            var sc = new ServiceCollection();
+            sc.AddSingleton(proxy);
+
+            var result = await AnalyzeTool.Analyze(sc.BuildServiceProvider(), analyzerResolver, resolver);
+
+            ToolResultAssert.Error(result, "Unavailable", "AlmcpNotReady");
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(toolsDir);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_Propagates_InsteadOfFaulted()
+    {
+        var toolsDir = CreateStubToolsDirWithAlmcp();
+
+        try
+        {
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+            var resolver = DummyResolver(analyzerResolver);
+
+            // Never started and not disposed: Ready stays pending, so the cancelled wait throws.
+            var proxy = new AlMcpProxy(new BcToolsLocator(toolsDir), resolver, new CapturingLogger());
+
+            var sc = new ServiceCollection();
+            sc.AddSingleton(proxy);
+
+            using var cts = new CancellationTokenSource();
+            await cts.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                AnalyzeTool.Analyze(sc.BuildServiceProvider(), analyzerResolver, resolver, cancellationToken: cts.Token));
+
+            await proxy.DisposeAsync();
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(toolsDir);
+        }
+    }
+
+    [Fact]
+    public void MapProxyFailure_IsUnavailableAlmcpCallFailed_WithAlmcpTextAsDetail()
+    {
+        var failed = new CallToolResult
+        {
+            IsError = true,
+            Content = [new TextContentBlock { Text = "Session not found" }]
+        };
+
+        var result = AnalyzeTool.MapProxyFailure(failed);
+
+        var root = ToolResultAssert.Error(result, "Unavailable", "AlmcpCallFailed");
+        Assert.Equal("Session not found", root.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task Invalid_WhenLimitIsNotPositive()
+    {
+        // The limit check runs before the proxy checks, so this needs no almcp.
+        var services = new ServiceCollection().BuildServiceProvider();
+        var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+        var result = await AnalyzeTool.Analyze(services, analyzerResolver, DummyResolver(analyzerResolver), limit: 0);
+
+        var root = ToolResultAssert.Error(result, "Invalid");
+        Assert.Contains("limit", root.GetProperty("message").GetString());
+    }
+
+    /// <summary>A tools directory that BcToolsLocator accepts as having almcp; nothing in it can run.</summary>
+    private static string CreateStubToolsDirWithAlmcp()
+    {
+        var toolsDir = Path.Combine(Path.GetTempPath(), $"alcops-stubalmcp-analyze-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(toolsDir);
+        File.WriteAllText(Path.Combine(toolsDir, "Microsoft.Dynamics.Nav.CodeAnalysis.dll"), "stub");
+        File.WriteAllText(Path.Combine(toolsDir, "almcp.exe"), "stub");
+        File.WriteAllText(Path.Combine(toolsDir, "almcp.dll"), "stub");
+        return toolsDir;
     }
 
     [Fact]
@@ -104,20 +203,16 @@ public sealed class AnalyzeToolIntegrationTests(AnalyzeAlMcpFixture fixture, ITe
         string[]? ruleIds = null,
         int limit = AnalyzeTool.DefaultLimit)
     {
-        var json = await AnalyzeTool.Analyze(
+        var result = await AnalyzeTool.Analyze(
             fixture.ServiceProvider,
             fixture.AnalyzerResolver,
             fixture.WorkspaceResolver,
             filePath, folderPath, projectPath,
             severities, analyzers, ruleIds, limit, Cts.Token);
 
-        output.WriteLine(json);
+        output.WriteLine(ToolResultAssert.Text(result));
 
-        var doc = JsonDocument.Parse(json);
-        Assert.False(doc.RootElement.TryGetProperty("error", out var err),
-            $"Unexpected error: {err}");
-
-        return JsonSerializer.Deserialize<AnalyzeResult>(json, JsonDefaults.Options)!;
+        return ToolResultAssert.OkAs<AnalyzeResult>(result);
     }
 
     [AlMcpFact]
@@ -265,35 +360,20 @@ public sealed class AnalyzeToolIntegrationTests(AnalyzeAlMcpFixture fixture, ITe
     }
 
     [AlMcpFact]
-    public async Task InvalidLimit_ReturnsError()
-    {
-        var json = await AnalyzeTool.Analyze(
-            fixture.ServiceProvider,
-            fixture.AnalyzerResolver,
-            fixture.WorkspaceResolver,
-            limit: 0,
-            cancellationToken: Cts.Token);
-
-        var doc = JsonDocument.Parse(json);
-        Assert.Equal("InvalidLimit", doc.RootElement.GetProperty("error").GetString());
-    }
-
-    [AlMcpFact]
-    public async Task UnknownProject_ReturnsError()
+    public async Task UnknownProject_ReturnsInvalid()
     {
         var bogus = Path.Combine(Path.GetDirectoryName(fixture.ProjA)!, "NonExistent");
-        var json = await AnalyzeTool.Analyze(
+        var result = await AnalyzeTool.Analyze(
             fixture.ServiceProvider,
             fixture.AnalyzerResolver,
             fixture.WorkspaceResolver,
             projectPath: bogus,
             cancellationToken: Cts.Token);
 
-        output.WriteLine(json);
-        var doc = JsonDocument.Parse(json);
-        Assert.Equal("UnknownProject", doc.RootElement.GetProperty("error").GetString());
+        output.WriteLine(ToolResultAssert.Text(result));
+        var root = ToolResultAssert.Error(result, "Invalid");
 
-        var message = doc.RootElement.GetProperty("message").GetString()!;
+        var message = root.GetProperty("message").GetString()!;
         Assert.Contains(fixture.ProjA, message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(fixture.ProjB, message, StringComparison.OrdinalIgnoreCase);
     }
