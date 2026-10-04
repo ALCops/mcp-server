@@ -32,6 +32,23 @@ public sealed class AnalyzeTool
             if (limit <= 0)
                 return ToolErrors.Invalid("limit must be a positive integer.");
 
+            // Normalized before the proxy checks so a malformed path is Invalid whether or not almcp runs.
+            string? normalizedFilePath = null;
+            if (filePath is not null)
+            {
+                if (!ProjectScope.TryNormalizePath(filePath, trimTrailingSeparator: false, out var full, out var pathMessage, "filePath"))
+                    return ToolErrors.Invalid(pathMessage!);
+                normalizedFilePath = full;
+            }
+
+            string? normalizedFolderPath = null;
+            if (folderPath is not null)
+            {
+                if (!ProjectScope.TryNormalizePath(folderPath, trimTrailingSeparator: true, out var full, out var pathMessage, "folderPath"))
+                    return ToolErrors.Invalid(pathMessage!);
+                normalizedFolderPath = full;
+            }
+
             var proxy = services.GetService(typeof(AlMcpProxy)) as AlMcpProxy;
             if (proxy is null)
                 return ToolErrors.Unavailable(UnavailableReason.NoProxy,
@@ -52,9 +69,6 @@ public sealed class AnalyzeTool
             var callerPassedProjectPath = projectPath is not null;
             var callerPassedFileOrFolder = filePath is not null || folderPath is not null;
             var callerPassedAnyScope = callerPassedProjectPath || callerPassedFileOrFolder;
-
-            var normalizedFilePath = filePath is not null ? Path.GetFullPath(filePath) : null;
-            var normalizedFolderPath = folderPath is not null ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(folderPath)) : null;
 
             var scopePath = normalizedFilePath ?? normalizedFolderPath;
             var config = workspaceResolver.Config;

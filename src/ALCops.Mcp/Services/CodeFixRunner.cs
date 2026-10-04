@@ -90,8 +90,14 @@ public sealed class CodeFixRunner
             }
         }
 
-        // The key matched, but no matching action changes this document.
-        return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic);
+        // The key matched, but no matching action changes this document. Same reason as "no fix at
+        // all", but get_fixes did advertise this key, so the message says what actually happened.
+        return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic) with
+        {
+            MessageOverride =
+                $"A fix with equivalence key '{equivalenceKey}' exists for {diagnosticId} at {filePath}:{line}:{column} " +
+                "but produced no change in this document (it may edit another file, which apply_fix does not support yet)."
+        };
     }
 
     /// <summary>
@@ -546,36 +552,58 @@ public sealed class CodeFixRunner
                 && Path.GetFullPath(fp).Equals(Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
             .ToImmutableArray();
 
-        if (AtPosition(diagnostics.Where(d => !d.IsSuppressed), line, column) is { } hit)
-            return new DiagnosticLookup(hit, null);
+        var (hit, suppressed) = MatchPosition(diagnostics, StartOf, d => d.IsSuppressed, line, column);
+        if (hit is null)
+            return new DiagnosticLookup(null, FixNotFoundReason.NoDiagnosticAtPosition);
 
-        if (AtPosition(diagnostics.Where(d => d.IsSuppressed), line, column) is not null)
-            return new DiagnosticLookup(null, FixNotFoundReason.SuppressedByPragma);
+        return suppressed
+            ? new DiagnosticLookup(null, FixNotFoundReason.SuppressedByPragma)
+            : new DiagnosticLookup(hit, null);
+    }
 
-        return new DiagnosticLookup(null, FixNotFoundReason.NoDiagnosticAtPosition);
+    /// <summary>1-based start line/column of a diagnostic.</summary>
+    private static (int Line, int Column) StartOf(Diagnostic d)
+    {
+        var start = d.Location.GetLineSpan().StartLinePosition;
+        return (start.Line + 1, start.Character + 1);
     }
 
     /// <summary>
-    /// The diagnostic starting exactly at the 1-based <paramref name="line"/>/<paramref name="column"/>,
-    /// or else the first one starting on that line.
+    /// Picks the candidate at the 1-based <paramref name="line"/>/<paramref name="column"/>. An exact
+    /// match wins over a same-line fallback in either set, so a pragma-suppressed diagnostic at the exact
+    /// position is not answered with a live neighbour on the same line. Order: exact live, exact
+    /// suppressed, same-line live, same-line suppressed. <c>Suppressed</c> says which set the hit came from.
     /// </summary>
-    private static Diagnostic? AtPosition(IEnumerable<Diagnostic> candidates, int line, int column)
+    internal static (T? Hit, bool Suppressed) MatchPosition<T>(
+        IEnumerable<T> candidates,
+        Func<T, (int Line, int Column)> startOf,
+        Func<T, bool> isSuppressed,
+        int line,
+        int column)
+        where T : class
     {
-        var diagnostics = candidates.ToList();
+        var all = candidates.ToList();
+        var live = all.Where(d => !isSuppressed(d)).ToList();
+        var suppressed = all.Where(isSuppressed).ToList();
 
-        return diagnostics.FirstOrDefault(d =>
-        {
-            var lineSpan = d.Location.GetLineSpan();
-            var startLine = lineSpan.StartLinePosition.Line + 1;
-            var startCol = lineSpan.StartLinePosition.Character + 1;
-
-            return startLine == line && startCol == column;
-        })
-        // Fallback: find any diagnostic with matching ID on the same line
-        ?? diagnostics.FirstOrDefault(d =>
-        {
-            var lineSpan = d.Location.GetLineSpan();
-            return lineSpan.StartLinePosition.Line + 1 == line;
-        });
+        if (ExactlyAt(live, startOf, line, column) is { } exactLive)
+            return (exactLive, false);
+        if (ExactlyAt(suppressed, startOf, line, column) is { } exactSuppressed)
+            return (exactSuppressed, true);
+        if (OnLine(live, startOf, line) is { } lineLive)
+            return (lineLive, false);
+        if (OnLine(suppressed, startOf, line) is { } lineSuppressed)
+            return (lineSuppressed, true);
+        return (null, false);
     }
+
+    /// <summary>The first candidate starting exactly at <paramref name="line"/>/<paramref name="column"/>.</summary>
+    private static T? ExactlyAt<T>(IEnumerable<T> candidates, Func<T, (int Line, int Column)> startOf, int line, int column)
+        where T : class =>
+        candidates.FirstOrDefault(d => startOf(d) == (line, column));
+
+    /// <summary>The first candidate starting anywhere on <paramref name="line"/>.</summary>
+    private static T? OnLine<T>(IEnumerable<T> candidates, Func<T, (int Line, int Column)> startOf, int line)
+        where T : class =>
+        candidates.FirstOrDefault(d => startOf(d).Line == line);
 }

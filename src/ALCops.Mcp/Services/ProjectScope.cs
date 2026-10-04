@@ -32,7 +32,9 @@ internal static class ProjectScope
             return knownProjects[0];
         }
 
-        var normalized = Normalize(projectPath);
+        if (!TryNormalizePath(projectPath, trimTrailingSeparator: true, out var normalized, out invalidMessage, "projectPath"))
+            return null;
+
         if (!knownProjects.Contains(normalized, StringComparer.OrdinalIgnoreCase))
         {
             invalidMessage =
@@ -56,7 +58,9 @@ internal static class ProjectScope
             return false;
         }
 
-        var full = Path.GetFullPath(projectPath);
+        if (!TryNormalizePath(projectPath, trimTrailingSeparator: false, out var full, out invalidMessage, "projectPath"))
+            return false;
+
         if (!Directory.Exists(full))
         {
             invalidMessage = $"projectPath '{projectPath}' does not exist. Pass the absolute path of the AL project folder (contains app.json).";
@@ -71,6 +75,40 @@ internal static class ProjectScope
 
         invalidMessage = null;
         return true;
+    }
+
+    /// <summary>
+    /// <see cref="Path.GetFullPath(string)"/> (optionally without a trailing separator) for a
+    /// caller-supplied path. An empty or whitespace-only string, or one <see cref="Path.GetFullPath(string)"/>
+    /// rejects (embedded NUL, unsupported format, too long), is an argument error: returns false with
+    /// <paramref name="invalidMessage"/> set, so the tool reports <c>Invalid</c> rather than <c>Faulted</c>.
+    /// </summary>
+    internal static bool TryNormalizePath(
+        string path,
+        bool trimTrailingSeparator,
+        out string normalized,
+        out string? invalidMessage,
+        string parameterName = "path")
+    {
+        normalized = "";
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            invalidMessage = $"{parameterName} '{path}' is not a valid path.";
+            return false;
+        }
+
+        try
+        {
+            var full = Path.GetFullPath(path);
+            normalized = trimTrailingSeparator ? Path.TrimEndingDirectorySeparator(full) : full;
+            invalidMessage = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            invalidMessage = $"{parameterName} '{path}' is not a valid path.";
+            return false;
+        }
     }
 
     private static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));

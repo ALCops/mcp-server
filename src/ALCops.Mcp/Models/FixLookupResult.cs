@@ -36,9 +36,12 @@ public record FixLookupResult(IReadOnlyList<CodeFixInfo> Fixes, FixNotFoundReaso
 /// <summary>
 /// Outcome of <c>CodeFixRunner.ApplyFixAsync</c>: the computed fix, or the reason there is none.
 /// <see cref="Candidates"/> is filled for <see cref="FixNotFoundReason.NoFixForEquivalenceKey"/>.
+/// <see cref="MessageOverride"/>, when set, replaces the shared per-reason message of the <c>NotFound</c> error.
 /// </summary>
 public record FixApplyResult(CodeFixResult? Fix, FixNotFoundReason? NotFoundReason, IReadOnlyList<CodeFixInfo> Candidates)
 {
+    public string? MessageOverride { get; init; }
+
     public static FixApplyResult Applied(CodeFixResult fix) => new(fix, null, []);
 
     public static FixApplyResult NotFound(FixNotFoundReason reason, IReadOnlyList<CodeFixInfo>? candidates = null) =>

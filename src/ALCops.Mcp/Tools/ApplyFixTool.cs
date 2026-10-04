@@ -47,7 +47,8 @@ public sealed class ApplyFixTool
 
             if (outcome.NotFoundReason is { } reason)
                 return ToolErrors.NotFound(reason,
-                    ToolErrors.NotFoundMessage(reason, diagnosticId, filePath, line, column, equivalenceKey),
+                    outcome.MessageOverride
+                        ?? ToolErrors.NotFoundMessage(reason, diagnosticId, filePath, line, column, equivalenceKey),
                     filePath, diagnosticId,
                     reason == FixNotFoundReason.NoFixForEquivalenceKey ? outcome.Candidates : null);
 
