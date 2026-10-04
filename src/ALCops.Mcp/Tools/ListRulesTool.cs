@@ -9,7 +9,8 @@ namespace ALCops.Mcp.Tools;
 [McpServerToolType]
 public sealed class ListRulesTool
 {
-    [McpServerTool(Name = "list_rules", ReadOnly = true),
+    [McpServerTool(Name = "list_rules", Title = ToolDescriptions.ListRulesTitle,
+        ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("List available analyzer rules. Rules come from the analyzers the project configures via al.codeAnalyzers — nothing is bundled. By default returns a compact list (ID, title, cop name). Use verbose=true for full metadata including description, severity, category, help URI, and code fix availability.")]
     public static async Task<CallToolResult> ListRules(
         ProjectAnalyzerResolver analyzerResolver,

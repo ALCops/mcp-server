@@ -1,5 +1,8 @@
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
 using ALCops.Mcp.Services;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -13,6 +16,24 @@ internal static class McpHost
     // Long enough for a normal project load, so hosts that list tools only once still get the al_*
     // tools; short enough that a broken almcp never makes the server look hung.
     private static readonly TimeSpan ListToolsReadyBudget = TimeSpan.FromSeconds(10);
+
+    // Strips the JSON-schema "default" keyword from every node of a native tool's input schema.
+    // Microsoft.Extensions.AI emits it for every parameter with a C# default, null included
+    // ("default": null on every optional string). Not MoveDefaultKeywordToDescription: that appends
+    // " (Default value: null)" to those parameters and duplicates the defaults our parameter
+    // descriptions already state (a contract test keeps those statements in place).
+    internal static readonly AIJsonSchemaCreateOptions NativeToolSchemaOptions = new()
+    {
+        TransformOptions = new AIJsonSchemaTransformOptions
+        {
+            TransformSchemaNode = (_, node) =>
+            {
+                if (node is JsonObject obj)
+                    obj.Remove("default");
+                return node;
+            }
+        }
+    };
 
     // NoInlining ensures this method is JIT-compiled separately from the caller, so the assembly
     // resolver registered by BcToolsLocator.ResolveAndRegister is in place before any BC types
@@ -30,13 +51,25 @@ internal static class McpHost
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 
+        ConfigureServices(builder.Services, toolsLocator, proxyOptions)
+            .WithStdioServerTransport();
+
+        await builder.Build().RunAsync();
+    }
+
+    // Everything the server registers except logging and the transport, so tests can build the same
+    // container and inspect the tools exactly as tools/list publishes them. Only ever called from
+    // RunAsync (after the BC assembly resolver is registered) or from tests, where the BC DLLs sit in
+    // the output folder. Hosted services are registered here but only start when a host runs.
+    internal static IMcpServerBuilder ConfigureServices(IServiceCollection services, BcToolsLocator toolsLocator, ProxyOptions proxyOptions)
+    {
         // Register ALCops services
-        builder.Services.AddSingleton(toolsLocator);
-        builder.Services.AddSingleton<ProjectLoader>();
-        builder.Services.AddSingleton<ProjectSessionManager>();
-        builder.Services.AddSingleton<CodeFixRunner>();
-        builder.Services.AddSingleton<GuardedFileWriter>();
-        builder.Services.AddSingleton(sp =>
+        services.AddSingleton(toolsLocator);
+        services.AddSingleton<ProjectLoader>();
+        services.AddSingleton<ProjectSessionManager>();
+        services.AddSingleton<CodeFixRunner>();
+        services.AddSingleton<GuardedFileWriter>();
+        services.AddSingleton(sp =>
         {
             var provisioner = sp.GetRequiredService<AlcopsAnalyzerProvisioner>();
             Func<string?> provisionedFolder = () =>
@@ -47,8 +80,8 @@ internal static class McpHost
                 sp.GetRequiredService<BcToolsLocator>(),
                 provisionedFolder);
         });
-        builder.Services.AddSingleton<RulesetLoader>();
-        builder.Services.AddSingleton(sp =>
+        services.AddSingleton<RulesetLoader>();
+        services.AddSingleton(sp =>
             new ProjectAnalyzerResolver(
                 sp.GetRequiredService<ExternalAnalyzerLoader>(),
                 sp.GetRequiredService<RulesetLoader>(),
@@ -60,17 +93,17 @@ internal static class McpHost
         var analyzersOption = AlcopsAnalyzersOption.Parse(
             proxyOptions.AlcopsAnalyzers
             ?? Environment.GetEnvironmentVariable("ALCOPS_ANALYZERS"));
-        builder.Services.AddSingleton(sp =>
+        services.AddSingleton(sp =>
             new AlcopsAnalyzerProvisioner(
                 sp.GetRequiredService<BcToolsLocator>(),
                 analyzersOption,
                 null,
                 null,
                 sp.GetRequiredService<ILogger<AlcopsAnalyzerProvisioner>>()));
-        builder.Services.AddHostedService<AlcopsAnalyzerProvisionerStartup>();
+        services.AddHostedService<AlcopsAnalyzerProvisionerStartup>();
 
         // Registered even with --no-proxy: list_rules falls back to the discovered project too.
-        builder.Services.AddSingleton(sp =>
+        services.AddSingleton(sp =>
             new WorkspaceStartupResolver(
                 sp.GetRequiredService<ProjectAnalyzerResolver>(),
                 sp.GetRequiredService<ExternalAnalyzerLoader>(),
@@ -81,17 +114,17 @@ internal static class McpHost
         // Register almcp proxy (optional — gracefully unavailable if almcp not found)
         if (!proxyOptions.ProxyDisabled)
         {
-            builder.Services.AddSingleton(sp =>
+            services.AddSingleton(sp =>
                 new AlMcpProxy(
                     sp.GetRequiredService<BcToolsLocator>(),
                     sp.GetRequiredService<WorkspaceStartupResolver>(),
                     sp.GetRequiredService<ILogger<AlMcpProxy>>(),
                     proxyOptions.PassthroughArgs));
-            builder.Services.AddHostedService<AlMcpProxyStartup>();
+            services.AddHostedService<AlMcpProxyStartup>();
         }
 
-        // Register MCP server with stdio transport and auto-discover tools
-        var mcpBuilder = builder.Services
+        // Register MCP server
+        var mcpBuilder = services
             .AddMcpServer(options =>
             {
                 options.ServerInfo = new()
@@ -99,9 +132,16 @@ internal static class McpHost
                     Name = "alcops",
                     Version = typeof(McpHost).Assembly.GetName().Version?.ToString() ?? "0.1.0"
                 };
-            })
-            .WithStdioServerTransport()
-            .WithToolsFromAssembly();
+            });
+
+        // Native tools. Registered by hand instead of WithToolsFromAssembly(), which offers no way to
+        // pass SchemaCreateOptions. Services = sp is what keeps DI parameters out of the schema, exactly
+        // as the SDK's own registration does.
+        foreach (var method in NativeToolMethods())
+        {
+            services.AddSingleton(sp => McpServerTool.Create(method, target: null,
+                new McpServerToolCreateOptions { Services = sp, SchemaCreateOptions = NativeToolSchemaOptions }));
+        }
 
         // Dynamic handlers: proxy MS tools alongside our native tools
         if (!proxyOptions.ProxyDisabled)
@@ -144,6 +184,26 @@ internal static class McpHost
                 });
         }
 
-        await builder.Build().RunAsync();
+        return mcpBuilder;
+    }
+
+    // Every tool is a public static method on an [McpServerToolType] class in this assembly. Any
+    // other [McpServerTool] method is refused loudly rather than silently left out of tools/list.
+    internal static IReadOnlyList<MethodInfo> NativeToolMethods()
+    {
+        var methods = typeof(McpHost).Assembly.GetTypes()
+            .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+            .ToList();
+
+        foreach (var method in methods)
+        {
+            if (!method.IsPublic || !method.IsStatic)
+                throw new InvalidOperationException(
+                    $"[McpServerTool] method {method.DeclaringType?.FullName}.{method.Name} must be public static.");
+        }
+
+        return methods;
     }
 }

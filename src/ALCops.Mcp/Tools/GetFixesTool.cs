@@ -9,7 +9,8 @@ namespace ALCops.Mcp.Tools;
 [McpServerToolType]
 public sealed class GetFixesTool
 {
-    [McpServerTool(Name = "get_fixes", ReadOnly = true),
+    [McpServerTool(Name = "get_fixes", Title = ToolDescriptions.GetFixesTitle,
+        ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false),
      Description("Get available code fixes for a specific diagnostic at a location. " +
         "Returns { diagnosticId, filePath, line, column, fixes: [{ equivalenceKey, title, providerName }] }; " +
         "pass a fix's equivalenceKey verbatim to apply_fix (or apply_fix_all). fixes is never empty. " +
