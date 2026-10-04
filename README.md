@@ -52,9 +52,9 @@ The native tools (`list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`) work 
 | Tool | Description |
 |------|-------------|
 | `list_rules` | List analyzer rules with metadata (ID, title, severity, category, cop). |
-| `get_fixes` | Get available code fixes for a specific diagnostic at a location. |
-| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content to disk unless the file changed after the fix was computed (`StaleFile`). The write is atomic (sibling temp file renamed over the target) and keeps the file's encoding, BOM and line endings. |
-| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. Files that changed on disk mid-operation are skipped and listed in `conflicts`; the rest are written as one batch — if any write fails, every file already written in that call is restored and nothing from the batch is kept. |
+| `get_fixes` | Get available code fixes for a specific diagnostic at a location. Returns `{ diagnosticId, filePath, line, column, fixes: [{ equivalenceKey, title, providerName }] }`; when nothing matches, the error `NotFound` with a `reason` (see [Errors](#errors)). |
+| `apply_fix` | Apply a code fix to resolve a diagnostic. Writes the fixed content to disk unless the file changed after the fix was computed (error `Stale`); a file that cannot be read, decoded or written is `Faulted` with `reason` `ReadFailed`, `UnsupportedEncoding` or `WriteFailed`. The write is atomic (sibling temp file renamed over the target) and keeps the file's encoding, BOM and line endings. |
+| `apply_fix_all` | Apply a code fix to every occurrence of a diagnostic rule across a project or a single file (like VS Code's "Fix all in workspace"). Writes to disk unless `dryRun` is set. A rule with several distinct fixes and no `equivalenceKey` is the error `Ambiguous` with `candidates`. Zero occurrences is a success (`applied: false`, `diagnosticsFound: 0`), except a rule the project ruleset suppresses (`NotFound` with `reason: SuppressedByRuleset`) or one that no loaded analyzer reports (`NotFound` with `reason: NoAnalyzerForRule`). Files that changed on disk mid-operation are skipped and listed in `conflicts`; the rest are written as one batch — if any write fails, every file already written in that call is restored and nothing from the batch is kept. A batch that fails and is rolled back is a normal (non-`isError`) result with `applied: false`, the failure in `message` and every staged file in `conflicts`, because the per-file outcome is in the body; only argument, lookup and single-file write failures use the error envelope. |
 | `analyze` | Compile with all configured analyzers and return structured cop + compiler diagnostics (analyzer, hasFix, filters, summary). Wraps `al_compile` with `onlyErrors: false`; needs `almcp`. |
 
 ### Proxied from Microsoft's `almcp`
@@ -73,7 +73,35 @@ After `apply_fix` or `apply_fix_all`, call `analyze` (preferred) or `al_compile`
 
 **Editing between calls:** `get_fixes`, `apply_fix` and `apply_fix_all` re-read `.al` files that changed on disk before every call (only changed files are re-parsed), so you can edit files between `get_fixes` and `apply_fix`, and neither tool will overwrite a file that no longer matches the text its fix was computed from.
 
-**How files are written:** each fixed file is written to a sibling `<file>.al.<id>.alcops.tmp` and then renamed over the original, so a crash or a full disk never leaves a truncated `.al` file. The file's encoding is detected from its byte-order mark and kept: UTF-8 with or without BOM, UTF-16 and UTF-32 come back exactly as they were, and line endings are untouched. Each file is decoded strictly in its detected encoding (UTF-8 when there is no BOM): a file holding bytes that are invalid in that encoding, such as a legacy Windows-1252 file or a stray Windows-1252 byte in a UTF-8 file with BOM, is never re-encoded; the fix is refused with `UnsupportedEncoding` instead. Every entry in `apply_fix_all`'s `conflicts` carries a `kind` (`StaleFile`, `UnsupportedEncoding`, `ReadFailed`, `WriteFailed`, `RolledBack`, `NotWritten`); `apply_fix` returns the same value as its `error`. No backup files are created. A stray `*.alcops.tmp` left by an interrupted write is removed the next time the project is loaded or refreshed.
+**How files are written:** each fixed file is written to a sibling `<file>.al.<id>.alcops.tmp` and then renamed over the original, so a crash or a full disk never leaves a truncated `.al` file. The file's encoding is detected from its byte-order mark and kept: UTF-8 with or without BOM, UTF-16 and UTF-32 come back exactly as they were, and line endings are untouched. Each file is decoded strictly in its detected encoding (UTF-8 when there is no BOM): a file holding bytes that are invalid in that encoding, such as a legacy Windows-1252 file or a stray Windows-1252 byte in a UTF-8 file with BOM, is never re-encoded; the fix is refused with `UnsupportedEncoding` instead. Every entry in `apply_fix_all`'s `conflicts` carries a `kind` (`StaleFile`, `UnsupportedEncoding`, `ReadFailed`, `WriteFailed`, `RolledBack`, `NotWritten`); `apply_fix` reports `StaleFile` as the error `Stale` and the other kinds as `Faulted` with that kind as `reason`. No backup files are created. A stray `*.alcops.tmp` left by an interrupted write is removed the next time the project is loaded or refreshed.
+
+## Errors
+
+Every native tool reports a failure the same way: the MCP result has `isError: true`, and its single text block holds one JSON envelope. A successful result never sets `isError`. The full JSON stays in the text block, so a client that hides error results still has the message.
+
+```json
+{ "error": "NotFound", "message": "No LC0020 at C:\\src\\MyPage.al:12:17; re-run analyze and use its line/column.", "reason": "NoDiagnosticAtPosition", "filePath": "C:\\src\\MyPage.al", "diagnosticId": "LC0020" }
+```
+
+| Field | Present |
+|-------|---------|
+| `error` | Always; one of the codes below. |
+| `message` | Always; human-readable. |
+| `reason` | For `NotFound`, `Unavailable`, and a `Faulted` write. |
+| `candidates` | For `Ambiguous` and `NotFound` / `NoFixForEquivalenceKey`: `[{ equivalenceKey, title, providerName }]`. |
+| `filePath`, `diagnosticId` | When the error concerns one file or rule. |
+| `detail` | For `Faulted` from an exception (its full type name) and `Unavailable` / `AlmcpCallFailed` (the text almcp returned). |
+
+| `error` | Meaning | What to do | `reason` |
+|---------|---------|------------|----------|
+| `Invalid` | The arguments are unusable as given: unknown `scope`, missing `filePath`, `limit` not positive, a `projectPath` that is not an AL project folder, or (for `analyze` and `list_rules`) not one of the projects the server was started with. | Fix the call. | – |
+| `NotFound` | Nothing matched. | `NoDiagnosticAtPosition`: re-run `analyze` and use its line/column. `NoFixForEquivalenceKey`: pick a key from `candidates`. Otherwise stop; there is nothing to fix. | `NoFixProvider`, `FileNotInProject`, `NoAnalyzerForRule`, `SuppressedByRuleset`, `SuppressedByPragma`, `NoDiagnosticAtPosition`, `NoFixForDiagnostic`, `NoFixForEquivalenceKey` |
+| `Ambiguous` | The rule offers several distinct fixes; `candidates` lists them. | Pass one `equivalenceKey` verbatim, or ask the user. | – |
+| `Stale` | The file changed or was deleted after the fix was computed; nothing was written. | Re-run the call. | – |
+| `Unavailable` | A dependency is down. | Report it; do not retry in a loop. | `NoProxy` (`--no-proxy`), `AlmcpNotFound`, `AlmcpNotReady`, `AlmcpCallFailed` (also covers errors `al_compile` itself reports) |
+| `Faulted` | An unexpected exception, or a write that was refused or failed. | Report it, including `message`. | `UnsupportedEncoding`, `ReadFailed`, `WriteFailed` for writes; none for exceptions |
+
+`candidates` holds one entry per distinct `equivalenceKey`: when two providers offer the same key, the first one wins, and that is also the one a key match applies. A key is `""` when the provider sets none; pass it back as is. The proxied `al_*` tools are not covered by this envelope: their errors pass through from `almcp` unchanged.
 
 ## Analyzers
 

@@ -57,15 +57,15 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         var analyzerSet = await analyzerResolver.ResolveAsync(projectDir, null, Cts.Token);
 
         const int line = 11, column = 17;
-        var fixes = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", line, column, analyzerSet, Cts.Token);
-        Assert.True(fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
+        var lookup = await codeFixRunner.GetFixesAsync(session, filePath, "LC0020", line, column, analyzerSet, Cts.Token);
+        Assert.True(lookup.Fixes.Count > 0, "Expected a fixable LC0020 at line 11, column 17.");
 
         var applyResult = await ApplyFixTool.ApplyFix(
             sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
             projectDir, filePath, "LC0020", line, column,
-            fixes[0].EquivalenceKey, analyzers: null, Cts.Token);
+            lookup.Fixes[0].EquivalenceKey, analyzers: null, Cts.Token);
 
-        Assert.Contains("\"applied\":true", applyResult);
+        Assert.True(ToolResultAssert.Ok(applyResult).GetProperty("applied").GetBoolean());
 
         // 3. Compile again — LC0020 must be gone
         fixture.Logger.Lines.Clear();
