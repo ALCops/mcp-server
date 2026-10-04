@@ -212,6 +212,35 @@ public class ApplyFixAllToolTests
         Assert.Contains("filePath", root.GetProperty("message").GetString());
     }
 
+    [Theory]
+    [InlineData("C:\\bad\0file.al")]
+    [InlineData("")]
+    public async Task ApplyFixAll_DocumentScopeMalformedFilePath_ReturnsInvalid(string filePath)
+    {
+        using var ctx = new TestContext();
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", scope: "document", filePath: filePath);
+
+        var root = ToolResultAssert.Error(result, "Invalid");
+        Assert.Contains("filePath", root.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_DocumentScopeFileOutsideProject_ReturnsNotFoundFileNotInProject()
+    {
+        using var ctx = new TestContext();
+        var nope = Path.Combine(ctx.ProjectPath, "Nope.al");
+
+        var result = await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", scope: "document", filePath: nope);
+
+        var root = ToolResultAssert.Error(result, "NotFound", "FileNotInProject");
+        Assert.Equal(Path.GetFullPath(nope), root.GetProperty("filePath").GetString());
+    }
+
     [Fact]
     public async Task ApplyFixAll_NoDiagnosticsFound_ReturnsNotAppliedWithZeroCount()
     {

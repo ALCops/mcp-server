@@ -208,6 +208,9 @@ public sealed class CodeFixRunner
 
         var normalizedFilePath = filePath is null ? null : Path.GetFullPath(filePath);
 
+        if (scope == FixAllScope.Document && session.GetDocument(normalizedFilePath!) is null)
+            return NotFound(diagnosticId, FixNotFoundReason.FileNotInProject);
+
         var diagnostics = await CollectDiagnosticsForRuleAsync(session, diagnosticId, normalizedFilePath, ct, analyzerProvider);
         if (diagnostics.IsEmpty)
             return new FixAllResult(FixAllStatus.NoDiagnosticsFound, diagnosticId, 0, null, null, [], [], []);

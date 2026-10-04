@@ -37,6 +37,10 @@ public sealed class ApplyFixTool
             if (!ProjectScope.RequireProjectFolder(projectPath, out var invalidMessage))
                 return ToolErrors.Invalid(invalidMessage!);
 
+            if (!ProjectScope.TryNormalizePath(filePath, trimTrailingSeparator: false, out var fullFilePath, out var invalidFilePath, "filePath"))
+                return ToolErrors.Invalid(invalidFilePath!);
+            filePath = fullFilePath;
+
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
             var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);

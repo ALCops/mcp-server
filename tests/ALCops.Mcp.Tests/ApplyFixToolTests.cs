@@ -326,6 +326,31 @@ public class ApplyFixToolTests
         }
     }
 
+    [Theory]
+    [InlineData("C:\\bad\0file.al")]
+    [InlineData("")]
+    public async Task ApplyFix_MalformedFilePath_ReturnsInvalid(string filePath)
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-badfile-test");
+
+        try
+        {
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, new CodeFixRunner(), analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17, "any");
+
+            var root = ToolResultAssert.Error(result, "Invalid");
+            Assert.Contains("filePath", root.GetProperty("message").GetString());
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
     /// <summary>Loads the project, finds the LC0020 fix at MyPage.al:11:17 and applies it through the tool.</summary>
     private static async Task<(ModelContextProtocol.Protocol.CallToolResult Result, string EquivalenceKey)> ApplyLc0020Async(
         string projectPath, string filePath, GuardedFileWriter writer)

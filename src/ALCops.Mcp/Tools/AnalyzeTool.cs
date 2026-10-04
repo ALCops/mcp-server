@@ -137,10 +137,13 @@ public sealed class AnalyzeTool
 
     /// <summary>
     /// Maps a failed proxied <c>al_compile</c> (almcp gone, session lost, or an error al_compile itself
-    /// reported) to <c>Unavailable/AlmcpCallFailed</c>, with the almcp text in <c>detail</c>.
+    /// reported) to <c>Unavailable/AlmcpCallFailed</c>, with the almcp text in <c>message</c> and <c>detail</c>.
     /// </summary>
-    internal static CallToolResult MapProxyFailure(CallToolResult result) =>
-        ToolErrors.Unavailable(UnavailableReason.AlmcpCallFailed,
-            "The proxied al_compile call failed (almcp may have exited, its session was lost, or al_compile itself reported an error).",
-            string.Join('\n', result.Content.OfType<TextContentBlock>().Select(b => b.Text)));
+    internal static CallToolResult MapProxyFailure(CallToolResult result)
+    {
+        var almcpText = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(b => b.Text));
+        return ToolErrors.Unavailable(UnavailableReason.AlmcpCallFailed,
+            $"The proxied al_compile call failed (almcp may have exited, its session was lost, or al_compile itself reported an error): {almcpText}",
+            almcpText);
+    }
 }

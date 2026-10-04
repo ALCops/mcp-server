@@ -50,6 +50,13 @@ public sealed class ApplyFixAllTool
             if (fixAllScope == FixAllScope.Document && string.IsNullOrWhiteSpace(filePath))
                 return ToolErrors.Invalid("filePath is required when scope='document'.");
 
+            if (fixAllScope == FixAllScope.Document)
+            {
+                if (!ProjectScope.TryNormalizePath(filePath!, trimTrailingSeparator: false, out var fullFilePath, out var invalidFilePath, "filePath"))
+                    return ToolErrors.Invalid(invalidFilePath!);
+                filePath = fullFilePath;
+            }
+
             if (!ProjectScope.RequireProjectFolder(projectPath, out var invalidMessage))
                 return ToolErrors.Invalid(invalidMessage!);
 
