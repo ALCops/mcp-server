@@ -241,7 +241,7 @@ public sealed class ToolContractTests(ToolContractFixture fixture) : IClassFixtu
             // "'project' (default, ...". Both appearing somewhere in the text is not enough.
             var v = Regex.Escape(value);
             var statesDefault = Regex.IsMatch(description,
-                $@"(?i)\bdefault\b\W{{0,4}}.{{0,12}}?'?{v}'?(?!\w)|(?<!\w)'?{v}'?\W{{0,3}}\(default\b");
+                $@"(?i)\bdefault\b\W{{0,4}}.{{0,12}}?(?<!\w)'?{v}'?(?!\w)|(?<!\w)'?{v}'?\W{{0,3}}\(default\b");
 
             Assert.True(statesDefault,
                 $"{name}.{parameter.Name}: description must state its default ({value}) next to the word 'default': \"{description}\"");
