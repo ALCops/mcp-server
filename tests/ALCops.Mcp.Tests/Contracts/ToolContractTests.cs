@@ -84,6 +84,26 @@ public sealed class ToolContractTests(ToolContractFixture fixture) : IClassFixtu
         Assert.Equal(ExpectedNames, options.ToolCollection.Select(t => t.ProtocolTool.Name).Order(StringComparer.Ordinal));
     }
 
+    [Fact]
+    public void ToolsList_IsTheSameFiveNativeTools_WithProxyHandlers_UnderDefaultMode()
+    {
+        // Same registration as the fixture but without --no-proxy. No host runs and AlMcpProxy is never
+        // resolved, so almcp is not started.
+        var services = new ServiceCollection().AddLogging();
+        McpHost.ConfigureServices(services, TestAnalyzers.ToolsLocator,
+            ProxyOptions.Parse(["--alcops-analyzers", "off"]));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal(ExpectedNames,
+            provider.GetServices<McpServerTool>().Select(t => t.ProtocolTool.Name).Order(StringComparer.Ordinal));
+
+        var options = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
+        Assert.NotNull(options.Handlers.ListToolsHandler);
+        Assert.NotNull(options.Handlers.CallToolHandler);
+        Assert.NotNull(options.ToolCollection);
+        Assert.Equal(ExpectedNames, options.ToolCollection.Select(t => t.ProtocolTool.Name).Order(StringComparer.Ordinal));
+    }
+
     [Theory]
     [MemberData(nameof(ToolNames))]
     public void InputSchema_HasNoDefaultKeywordAnywhere(string name)
@@ -217,10 +237,14 @@ public sealed class ToolContractTests(ToolContractFixture fixture) : IClassFixtu
                 ? (b ? "true" : "false")
                 : Convert.ToString(parameter.DefaultValue, CultureInfo.InvariantCulture)!;
 
-            Assert.True(
-                description.Contains("default", StringComparison.OrdinalIgnoreCase)
-                    && description.Contains(value, StringComparison.Ordinal),
-                $"{name}.{parameter.Name}: description must state its default ({value}): \"{description}\"");
+            // The value must sit right next to the word "default": "(default 500)", "Default: false.",
+            // "'project' (default, ...". Both appearing somewhere in the text is not enough.
+            var v = Regex.Escape(value);
+            var statesDefault = Regex.IsMatch(description,
+                $@"(?i)\bdefault\b\W{{0,4}}.{{0,12}}?'?{v}'?(?!\w)|(?<!\w)'?{v}'?\W{{0,3}}\(default\b");
+
+            Assert.True(statesDefault,
+                $"{name}.{parameter.Name}: description must state its default ({value}) next to the word 'default': \"{description}\"");
         }
     }
 
