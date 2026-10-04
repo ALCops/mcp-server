@@ -39,8 +39,14 @@ public sealed class ToolContractFixture : IDisposable
     public static JsonElement Wire(McpServerTool tool) =>
         JsonSerializer.SerializeToElement(tool.ProtocolTool, McpJsonUtilities.DefaultOptions);
 
-    /// <summary>The SDK puts the tool's <see cref="MethodInfo"/> first in its metadata.</summary>
-    public static MethodInfo Method(McpServerTool tool) => Assert.IsAssignableFrom<MethodInfo>(tool.Metadata[0]);
+    /// <summary>The tool's <see cref="MethodInfo"/>, which the SDK adds to its metadata.</summary>
+    public static MethodInfo Method(McpServerTool tool)
+    {
+        var methods = tool.Metadata.OfType<MethodInfo>().ToList();
+        Assert.True(methods.Count == 1,
+            $"Expected exactly one MethodInfo in the metadata of '{tool.ProtocolTool.Name}', found {methods.Count}.");
+        return methods[0];
+    }
 
     public void Dispose() => Provider.Dispose();
 }
@@ -113,6 +119,47 @@ public sealed class ToolContractTests(ToolContractFixture fixture) : IClassFixtu
         Assert.Equal(
             userParameters.Where(p => !p.HasDefaultValue).Select(p => p.Name!).Order(StringComparer.Ordinal),
             required);
+    }
+
+    // Literal pin of the published parameters: the reflection-based test above cannot catch a renamed
+    // or dropped parameter, because it derives its expectation from the same method signature.
+    public static TheoryData<string, string[], string[]> PublishedParameters => new()
+    {
+        { "analyze", ["filePath", "folderPath", "projectPath", "severities", "analyzers", "ruleIds", "limit"], [] },
+        { "list_rules", ["projectPath", "copFilter", "analyzers", "verbose"], [] },
+        { "get_fixes", ["projectPath", "filePath", "diagnosticId", "line", "column", "analyzers"],
+            ["projectPath", "filePath", "diagnosticId", "line", "column"] },
+        { "apply_fix", ["projectPath", "filePath", "diagnosticId", "line", "column", "equivalenceKey", "analyzers"],
+            ["projectPath", "filePath", "diagnosticId", "line", "column", "equivalenceKey"] },
+        { "apply_fix_all", ["projectPath", "diagnosticId", "scope", "filePath", "equivalenceKey", "analyzers", "dryRun"],
+            ["projectPath", "diagnosticId"] },
+    };
+
+    [Theory]
+    [MemberData(nameof(PublishedParameters))]
+    public void InputSchema_PublishesThePinnedParameters(string name, string[] properties, string[] required)
+    {
+        var schema = ToolContractFixture.Wire(fixture.Tool(name)).GetProperty("inputSchema");
+
+        Assert.Equal(properties, schema.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+        var publishedRequired = schema.TryGetProperty("required", out var req)
+            ? req.EnumerateArray().Select(e => e.GetString()!).ToList()
+            : [];
+        Assert.Equal(required.Order(StringComparer.Ordinal), publishedRequired.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void EveryToolMethodInTheAssembly_IsPublicStatic()
+    {
+        var methods = typeof(McpHost).Assembly.GetTypes()
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+            .ToList();
+
+        Assert.Equal(ExpectedNames.Length, methods.Count);
+        Assert.All(methods, m => Assert.True(m.IsPublic && m.IsStatic,
+            $"{m.DeclaringType?.FullName}.{m.Name} must be public static."));
+        Assert.Equal(methods.Count, McpHost.NativeToolMethods().Count);
     }
 
     [Theory]

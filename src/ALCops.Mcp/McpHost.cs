@@ -187,10 +187,23 @@ internal static class McpHost
         return mcpBuilder;
     }
 
-    // Every tool is a static method on an [McpServerToolType] class in this assembly.
-    private static IEnumerable<MethodInfo> NativeToolMethods() =>
-        typeof(McpHost).Assembly.GetTypes()
+    // Every tool is a public static method on an [McpServerToolType] class in this assembly. Any
+    // other [McpServerTool] method is refused loudly rather than silently left out of tools/list.
+    internal static IReadOnlyList<MethodInfo> NativeToolMethods()
+    {
+        var methods = typeof(McpHost).Assembly.GetTypes()
             .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
-            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
-            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null);
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+            .ToList();
+
+        foreach (var method in methods)
+        {
+            if (!method.IsPublic || !method.IsStatic)
+                throw new InvalidOperationException(
+                    $"[McpServerTool] method {method.DeclaringType?.FullName}.{method.Name} must be public static.");
+        }
+
+        return methods;
+    }
 }
