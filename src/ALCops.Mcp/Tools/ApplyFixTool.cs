@@ -9,7 +9,8 @@ namespace ALCops.Mcp.Tools;
 [McpServerToolType]
 public sealed class ApplyFixTool
 {
-    [McpServerTool(Name = "apply_fix", ReadOnly = false, Destructive = false),
+    [McpServerTool(Name = "apply_fix", Title = ToolDescriptions.ApplyFixTitle,
+        ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false),
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
         "Writes the fixed content to the file on disk unless the file changed after the fix was computed, " +
         "in which case nothing is written and the error Stale is returned (re-run). " +
@@ -17,7 +18,7 @@ public sealed class ApplyFixTool
         "nothing is written and the error Faulted with reason UnsupportedEncoding is returned (reason ReadFailed if the file cannot be read, WriteFailed if the write fails). " +
         "When no fix matches, returns NotFound with a reason, the same as get_fixes; for NoFixForEquivalenceKey, candidates lists the keys that do apply. " +
         "The write is atomic and preserves the file's encoding and line endings. " +
-        "Verify with analyze or al_compile (options.onlyErrors: false).")]
+        ToolDescriptions.VerifyAfterWrite)]
     public static async Task<CallToolResult> ApplyFix(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,

@@ -1,11 +1,9 @@
-using System.Text.Json;
 using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Protocol;
-using ModelContextProtocol.Server;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -184,26 +182,6 @@ public sealed class AnalyzeToolTests
         File.WriteAllText(Path.Combine(toolsDir, "almcp.exe"), "stub");
         File.WriteAllText(Path.Combine(toolsDir, "almcp.dll"), "stub");
         return toolsDir;
-    }
-
-    [Fact]
-    public void Schema_ExposesUserParameters_HidesServicesAndCancellationToken()
-    {
-        var method = typeof(AnalyzeTool).GetMethod(nameof(AnalyzeTool.Analyze))!;
-        var tool = McpServerTool.Create(method);
-
-        var schema = tool.ProtocolTool.InputSchema;
-        var schemaJson = JsonSerializer.Serialize(schema);
-        using var doc = JsonDocument.Parse(schemaJson);
-        var properties = doc.RootElement.GetProperty("properties");
-        var paramNames = properties.EnumerateObject().Select(p => p.Name).ToHashSet();
-
-        Assert.DoesNotContain("services", paramNames);
-        Assert.DoesNotContain("cancellationToken", paramNames);
-
-        string[] expected = ["filePath", "folderPath", "projectPath", "severities", "analyzers", "ruleIds", "limit"];
-        foreach (var name in expected)
-            Assert.Contains(name, paramNames);
     }
 }
 

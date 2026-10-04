@@ -27,7 +27,17 @@ Add to your `.mcp.json` (Claude Code) or `claude_desktop_config.json` (Claude De
 
 ## Tools
 
-**Native:** `list_rules`, `get_fixes`, `apply_fix`, `apply_fix_all`, `analyze` — code fixes, rule discovery, and structured diagnostics with filtering. `analyze` wraps `al_compile` (needs `almcp`); the others work without it.
+**Native:**
+
+| Tool | Title | What it does | Writes files |
+|---|---|---|---|
+| `analyze` | Analyze AL project | Cop + compiler diagnostics as structured JSON, with filtering; wraps `al_compile` (needs `almcp`) | No |
+| `list_rules` | List analyzer rules | Rules of the analyzers the project configures | No |
+| `get_fixes` | Get code fixes | Code fixes available for one diagnostic | No |
+| `apply_fix` | Apply code fix | Applies one fix to one diagnostic | Yes |
+| `apply_fix_all` | Apply fix to all occurrences | Fixes every occurrence of one rule in a project or file | Yes (unless `dryRun`) |
+
+Only `analyze` needs `almcp`; the others work without it.
 
 **Proxied from `almcp`:** `al_compile`, `al_build`, `al_getdiagnostics`, `al_downloadsymbols`, `al_symbolsearch`, `al_publish`, `al_run_tests` and the rest of the `al_*` set. Pass `--no-proxy` to suppress these when your agent already registers `almcp` itself.
 

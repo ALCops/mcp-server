@@ -10,7 +10,8 @@ namespace ALCops.Mcp.Tools;
 [McpServerToolType]
 public sealed class ApplyFixAllTool
 {
-    [McpServerTool(Name = "apply_fix_all", ReadOnly = false, Destructive = false),
+    [McpServerTool(Name = "apply_fix_all", Title = ToolDescriptions.ApplyFixAllTitle,
+        ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false),
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. " +
@@ -21,7 +22,7 @@ public sealed class ApplyFixAllTool
         "(or that cannot be read, or are not valid in their detected encoding) " +
         "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
         "If a write fails, every file written in this call is restored (unless it was edited since) and all of them are listed in 'conflicts'. " +
-        "Verify with analyze or al_compile (options.onlyErrors: false).")]
+        ToolDescriptions.VerifyAfterWrite)]
     public static async Task<CallToolResult> ApplyFixAll(
         ProjectSessionManager sessionManager,
         CodeFixRunner codeFixRunner,
@@ -34,7 +35,7 @@ public sealed class ApplyFixAllTool
         [Description("Absolute path to a single .al file. Required when scope='document'; ignored (with a warning) when scope='project'.")] string? filePath = null,
         [Description("Equivalence key of the fix to apply (from get_fixes results). Required only if the rule offers more than one distinct fix; omit otherwise.")] string? equivalenceKey = null,
         [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
-        [Description("If true, computes and reports the changes without writing to disk.")] bool dryRun = false,
+        [Description("If true, computes and reports the changes without writing to disk. Default: false.")] bool dryRun = false,
         CancellationToken cancellationToken = default)
     {
         try
