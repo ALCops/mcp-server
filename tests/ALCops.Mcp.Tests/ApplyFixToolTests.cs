@@ -281,6 +281,55 @@ public class ApplyFixToolTests
     }
 
     [Fact]
+    public async Task ApplyFix_DryRun_WritesNothingAndReturnsTheSameChangesAsTheRealWrite()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-dryrun-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+            var originalBytes = await File.ReadAllBytesAsync(filePath);
+
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var runner = new CodeFixRunner();
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var dryRun = await ApplyFixTool.ApplyFix(
+                sessionManager, runner, analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17, dryRun: true);
+
+            var preview = ToolResultAssert.Ok(dryRun);
+            Assert.False(preview.GetProperty("applied").GetBoolean());
+            Assert.True(preview.GetProperty("dryRun").GetBoolean());
+            Assert.Equal(filePath, preview.GetProperty("filePath").GetString());
+            Assert.False(string.IsNullOrEmpty(preview.GetProperty("equivalenceKey").GetString()));
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+
+            var change = Assert.Single(preview.GetProperty("changes").EnumerateArray().ToList());
+            Assert.Equal(filePath, change.GetProperty("filePath").GetString());
+            Assert.False(change.GetProperty("truncated").GetBoolean());
+            var diff = change.GetProperty("diff").GetString()!;
+            Assert.StartsWith("@@ -", diff);
+            Assert.Contains("\n-                ApplicationArea = All;\n", diff);
+
+            var real = await ApplyFixTool.ApplyFix(
+                sessionManager, runner, analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17);
+
+            var written = ToolResultAssert.Ok(real);
+            Assert.True(written.GetProperty("applied").GetBoolean());
+            Assert.False(written.GetProperty("dryRun").GetBoolean());
+            Assert.Equal(preview.GetProperty("equivalenceKey").GetString(), written.GetProperty("equivalenceKey").GetString());
+            Assert.Equal(preview.GetProperty("changes").GetRawText(), written.GetProperty("changes").GetRawText());
+            Assert.NotEqual(originalBytes, await File.ReadAllBytesAsync(filePath));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
     public async Task ApplyFix_NoKeySingleFix_AppliesAndWrites()
     {
         var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-nokey-test");

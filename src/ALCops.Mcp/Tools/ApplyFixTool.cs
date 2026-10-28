@@ -12,8 +12,10 @@ public sealed class ApplyFixTool
     [McpServerTool(Name = "apply_fix", Title = ToolDescriptions.ApplyFixTitle,
         ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false),
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
-        "Writes the fixed content to the file on disk unless the file changed after the fix was computed, " +
-        "in which case nothing is written and the error Stale is returned (re-run). " +
+        "Writes the fixed content to the file on disk unless dryRun is true or the file changed after the fix was computed; " +
+        "returns { applied, dryRun, diagnosticId, fixTitle, equivalenceKey, filePath, changes } where equivalenceKey is the key that was applied and " +
+        "changes lists every file the fix changes (or would change, on a dry run) with a hunks-only unified diff (3 context lines; diff cut at 200 KB per file with truncated: true). " +
+        "If a file changed after the fix was computed, nothing is written and the error Stale is returned (re-run). " +
         "A fix that edits several files writes all of them or none. A fix that adds or removes files is NotFound with reason UnsupportedFix and nothing is written. " +
         "A file that is not valid in its detected encoding (e.g. a Windows-1252 file read as UTF-8) is never re-encoded: " +
         "nothing is written and the error Faulted with reason UnsupportedEncoding is returned (reason ReadFailed if the file cannot be read, WriteFailed if the write fails). " +
@@ -34,11 +36,12 @@ public sealed class ApplyFixTool
         [Description("Column number of the diagnostic (1-based).")] int column,
         [Description("Optional: equivalence key of the fix to apply (from get_fixes or an Ambiguous error's candidates), verbatim. Needed only when the rule offers several distinct fixes.")] string? equivalenceKey = null,
         [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
+        [Description("If true, computes and reports the changes without writing to disk. Default: false.")] bool dryRun = false,
         CancellationToken cancellationToken = default) =>
         await RunAsync(
             sessionManager, codeFixRunner,
             async (path, specs, ct) => await analyzerResolver.ResolveAsync(path, specs, ct),
-            fileWriter, projectPath, filePath, diagnosticId, line, column, equivalenceKey, analyzers, cancellationToken);
+            fileWriter, projectPath, filePath, diagnosticId, line, column, equivalenceKey, analyzers, dryRun, cancellationToken);
 
     /// <summary>
     /// The body of <see cref="ApplyFix"/>, with analyzer resolution passed in so tests can substitute
@@ -56,6 +59,7 @@ public sealed class ApplyFixTool
         int column,
         string? equivalenceKey,
         string? analyzers,
+        bool dryRun,
         CancellationToken cancellationToken)
     {
         try
@@ -89,18 +93,24 @@ public sealed class ApplyFixTool
 
             var fix = outcome.Fix!;
 
-            var writeError = fix.Changes.Count == 1
-                ? await WriteOneAsync(fileWriter, fix.Changes[0], diagnosticId, cancellationToken)
-                : await WriteAllOrNothingAsync(fileWriter, fix.Changes, diagnosticId, cancellationToken);
-            if (writeError is not null)
-                return writeError;
+            if (!dryRun)
+            {
+                var writeError = fix.Changes.Count == 1
+                    ? await WriteOneAsync(fileWriter, fix.Changes[0], diagnosticId, cancellationToken)
+                    : await WriteAllOrNothingAsync(fileWriter, fix.Changes, diagnosticId, cancellationToken);
+                if (writeError is not null)
+                    return writeError;
+            }
 
             return ToolResults.Ok(new
             {
-                applied = true,
-                filePath,
+                applied = !dryRun,
+                dryRun,
+                diagnosticId,
                 fixTitle = fix.FixTitle,
-                diagnosticId
+                equivalenceKey = fix.EquivalenceKey,
+                filePath,
+                changes = fix.Changes.Select(c => UnifiedDiff.Report(c.FilePath, c.OriginalContent, c.ModifiedContent)).ToArray()
             });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

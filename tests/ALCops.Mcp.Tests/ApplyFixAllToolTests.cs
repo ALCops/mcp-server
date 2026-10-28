@@ -128,6 +128,36 @@ public class ApplyFixAllToolTests
         // Files on disk must be untouched.
         Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
         Assert.Equal(originalPageB, ctx.ReadFile("PageB.al"));
+
+        // One diff per changed file, for exactly the files in filesChanged.
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray().Select(e => e.GetString()).ToArray();
+        var changes = root.GetProperty("changes").EnumerateArray().ToArray();
+        Assert.Equal(filesChanged, changes.Select(c => c.GetProperty("filePath").GetString()));
+        Assert.All(changes, c =>
+        {
+            Assert.False(c.GetProperty("truncated").GetBoolean());
+            Assert.StartsWith("@@ -", c.GetProperty("diff").GetString());
+            Assert.Contains("\n-                ApplicationArea = All;\n", c.GetProperty("diff").GetString());
+        });
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_RealWrite_ChangesMatchTheDryRun()
+    {
+        using var ctx = new TestContext();
+
+        var dryRun = ToolResultAssert.Ok(await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", dryRun: true));
+        var real = ToolResultAssert.Ok(await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020"));
+
+        Assert.True(real.GetProperty("applied").GetBoolean());
+        Assert.Equal(dryRun.GetProperty("changes").GetRawText(), real.GetProperty("changes").GetRawText());
+        Assert.Equal(
+            real.GetProperty("filesChanged").EnumerateArray().Select(e => e.GetString()),
+            real.GetProperty("changes").EnumerateArray().Select(c => c.GetProperty("filePath").GetString()));
     }
 
     [Fact]
@@ -434,6 +464,7 @@ public class ApplyFixAllToolTests
         Assert.False(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Empty(root.GetProperty("filesChanged").EnumerateArray());
+        Assert.Empty(root.GetProperty("changes").EnumerateArray());
 
         var conflicts = root.GetProperty("conflicts").EnumerateArray()
             .Select(e => Path.GetFileName(e.GetProperty("filePath").GetString())).ToArray();

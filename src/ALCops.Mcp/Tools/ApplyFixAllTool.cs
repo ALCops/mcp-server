@@ -15,6 +15,8 @@ public sealed class ApplyFixAllTool
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. " +
+        "changes lists exactly the files in filesChanged (every computed change on a dry run, the written files otherwise, none after a rolled-back batch), " +
+        "each with a hunks-only unified diff (3 context lines; diff cut at 200 KB per file with truncated: true); conflicts carry no diff. " +
         "If the rule offers more than one distinct fix and no equivalenceKey is given, returns the error Ambiguous whose candidates " +
         "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
         "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses (NotFound with reason SuppressedByRuleset) or one no loaded analyzer reports (NotFound with reason NoAnalyzerForRule). " +
@@ -154,6 +156,11 @@ public sealed class ApplyFixAllTool
 
             var unfixed = MergeUnfixed(result, conflicts);
 
+            // changes describes exactly filesChanged: every computed change on a dry run, else the written files.
+            var changedFiles = dryRun
+                ? result.Changes
+                : [.. result.Changes.Where(c => written.Contains(c.FilePath, StringComparer.OrdinalIgnoreCase))];
+
             return ToolResults.Ok(new
             {
                 applied = !dryRun && written.Count > 0,
@@ -162,7 +169,8 @@ public sealed class ApplyFixAllTool
                 fixTitle = result.FixTitle,
                 equivalenceKey = result.EquivalenceKey,
                 diagnosticsFound = result.DiagnosticsFound,
-                filesChanged = dryRun ? result.Changes.Select(c => c.FilePath).ToArray() : [.. written],
+                filesChanged = changedFiles.Select(c => c.FilePath).ToArray(),
+                changes = changedFiles.Select(c => UnifiedDiff.Report(c.FilePath, c.OriginalContent, c.ModifiedContent)).ToArray(),
                 conflicts,
                 message = conflictMessage,
                 unfixedDiagnostics = unfixed,

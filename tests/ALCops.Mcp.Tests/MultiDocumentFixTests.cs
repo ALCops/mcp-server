@@ -32,7 +32,7 @@ public sealed class MultiDocumentFixTests
         public Task<ModelContextProtocol.Protocol.CallToolResult> ApplyFixAsync(CodeFixProvider provider, string? key = null) =>
             ApplyFixTool.RunAsync(
                 SessionManager, Runner, DecoratedProvider.Resolving(Resolver, provider), new GuardedFileWriter(),
-                ProjectPath, PathOf("PageA.al"), Rule, 11, 17, key, null, CancellationToken.None);
+                ProjectPath, PathOf("PageA.al"), Rule, 11, 17, key, null, dryRun: false, CancellationToken.None);
 
         public void Dispose()
         {
