@@ -79,8 +79,12 @@ public sealed class GuardedFileWriter
     /// <see cref="BatchWriteResult.RolledBack"/>.
     /// Any exception during phase 2 triggers the rollback; a cancellation then rethrows, anything else
     /// is reported as the failing file's <c>WriteFailed</c> entry.
+    /// With <paramref name="allOrNothing"/>, a phase-1 conflict on any file commits nothing at all
+    /// (<see cref="BatchWriteResult.Written"/> is empty, the conflicts are in
+    /// <see cref="BatchWriteResult.StaleConflicts"/>); apply_fix uses this for a fix that edits several files.
     /// </summary>
-    public async Task<BatchWriteResult> WriteAllIfUnchangedAsync(IReadOnlyList<PendingWrite> writes, CancellationToken ct)
+    public async Task<BatchWriteResult> WriteAllIfUnchangedAsync(
+        IReadOnlyList<PendingWrite> writes, CancellationToken ct, bool allOrNothing = false)
     {
         var staleConflicts = new List<FileWriteConflict>();
         var staged = new List<Staged>();
@@ -93,6 +97,9 @@ public sealed class GuardedFileWriter
             else
                 staged.Add(s!);
         }
+
+        if (allOrNothing && staleConflicts.Count > 0)
+            return new BatchWriteResult([], staleConflicts, [], null);
 
         var committed = new List<Staged>();
         foreach (var s in staged)

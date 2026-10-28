@@ -24,6 +24,8 @@ public enum FixNotFoundReason
     NoFixForDiagnostic,
     /// <summary>Fixes exist, but none has the requested equivalence key.</summary>
     NoFixForEquivalenceKey,
+    /// <summary>The fix adds or removes files (or projects), which this server cannot apply.</summary>
+    UnsupportedFix,
 }
 
 /// <summary>Outcome of <c>CodeFixRunner.GetFixesAsync</c>: either fixes, or the reason there are none.</summary>

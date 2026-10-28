@@ -18,6 +18,7 @@ public sealed class ApplyFixAllTool
         "If the rule offers more than one distinct fix and no equivalenceKey is given, returns the error Ambiguous whose candidates " +
         "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
         "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses (NotFound with reason SuppressedByRuleset) or one no loaded analyzer reports (NotFound with reason NoAnalyzerForRule). " +
+        "Every file the fix changes is written, including side edits to files without an occurrence. A fix that adds or removes files is NotFound with reason UnsupportedFix and nothing is written. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
         "(or that cannot be read, or are not valid in their detected encoding) " +
         "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
@@ -36,7 +37,29 @@ public sealed class ApplyFixAllTool
         [Description("Equivalence key of the fix to apply (from get_fixes results). Required only if the rule offers more than one distinct fix; omit otherwise.")] string? equivalenceKey = null,
         [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         [Description("If true, computes and reports the changes without writing to disk. Default: false.")] bool dryRun = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RunAsync(
+            sessionManager, codeFixRunner,
+            async (path, specs, ct) => await analyzerResolver.ResolveAsync(path, specs, ct),
+            fileWriter, projectPath, diagnosticId, scope, filePath, equivalenceKey, analyzers, dryRun, cancellationToken);
+
+    /// <summary>
+    /// The body of <see cref="ApplyFixAll"/>, with analyzer resolution passed in so tests can substitute
+    /// an <see cref="IAnalyzerProvider"/> (e.g. one with test-only fix providers).
+    /// </summary>
+    internal static async Task<CallToolResult> RunAsync(
+        ProjectSessionManager sessionManager,
+        CodeFixRunner codeFixRunner,
+        Func<string, IReadOnlyList<string>?, CancellationToken, Task<IAnalyzerProvider>> resolveAnalyzers,
+        GuardedFileWriter fileWriter,
+        string projectPath,
+        string diagnosticId,
+        string scope,
+        string? filePath,
+        string? equivalenceKey,
+        string? analyzers,
+        bool dryRun,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -71,7 +94,7 @@ public sealed class ApplyFixAllTool
             var session = await sessionManager.GetOrLoadProjectAsync(projectPath, cancellationToken);
 
             var analyzerSpecs = AnalyzerSpec.ParseJsonArray(analyzers);
-            var analyzerSet = await analyzerResolver.ResolveAsync(projectPath, analyzerSpecs, cancellationToken);
+            var analyzerSet = await resolveAnalyzers(projectPath, analyzerSpecs, cancellationToken);
 
             var result = await codeFixRunner.ApplyFixAllAsync(
                 session, diagnosticId, fixAllScope, filePath, equivalenceKey, analyzerSet, cancellationToken);

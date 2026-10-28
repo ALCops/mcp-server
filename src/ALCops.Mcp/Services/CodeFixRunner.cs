@@ -72,29 +72,69 @@ public sealed class CodeFixRunner
 
         var action = choice.Action!;
         var chosenKey = KeyOf(action);
-        var originalText = (await document.GetTextAsync(ct)).ToString();
 
         var operations = await action.GetOperationsAsync(ct);
         var applyChanges = operations.OfType<ApplyChangesOperation>().FirstOrDefault();
-        var changedDocument = applyChanges?.ChangedSolution.GetDocument(document.Id);
-        var modifiedContent = changedDocument is null ? null : (await changedDocument.GetTextAsync(ct))?.ToString();
-        if (modifiedContent is not null && !string.Equals(modifiedContent, originalText, StringComparison.Ordinal))
+        if (applyChanges is not null)
         {
-            return FixApplyResult.Applied(new CodeFixResult(
-                FilePath: filePath,
-                OriginalContent: originalText,
-                ModifiedContent: modifiedContent,
-                FixTitle: action.Title));
+            var collected = await CollectChangesAsync(session, document.Project.Solution, applyChanges.ChangedSolution, ct);
+            if (collected is null)
+                return FixApplyResult.NotFound(FixNotFoundReason.UnsupportedFix);
+
+            if (collected.Count > 0)
+                return FixApplyResult.Applied(new CodeFixResult(action.Title, chosenKey, collected));
         }
 
-        // The fix exists, but its action changes nothing in this document. Same reason as "no fix at
-        // all", but get_fixes did advertise this key, so the message says what actually happened.
+        // The fix exists, but its action changes nothing. Same reason as "no fix at all", but get_fixes
+        // did advertise this key, so the message says what actually happened.
         return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic) with
         {
             MessageOverride =
                 $"A fix with equivalence key '{chosenKey}' exists for {diagnosticId} at {filePath}:{line}:{column} " +
-                "but produced no change in this document (it may edit another file, which apply_fix does not support yet)."
+                "but produced no change."
         };
+    }
+
+    /// <summary>
+    /// Every document <paramref name="changed"/> changes relative to <paramref name="original"/>, with
+    /// its old and new text, ordered by file path (ordinal, case-insensitive). The only place the
+    /// documents a fix changes are discovered. Returns <c>null</c> when the fix cannot be applied as
+    /// file writes: it adds or removes a project or document, or changes a document without a file
+    /// path or one the session does not track (<see cref="FixNotFoundReason.UnsupportedFix"/>).
+    /// A document whose text ends up identical is not a change.
+    /// </summary>
+    internal static async Task<IReadOnlyList<DocumentChange>?> CollectChangesAsync(
+        ProjectSession session, Solution original, Solution changed, CancellationToken ct)
+    {
+        var solutionChanges = changed.GetChanges(original);
+        if (solutionChanges.GetAddedProjects().Any() || solutionChanges.GetRemovedProjects().Any())
+            return null;
+
+        var changes = new List<DocumentChange>();
+        foreach (var projectChanges in solutionChanges.GetProjectChanges())
+        {
+            if (projectChanges.GetAddedDocuments().Any() || projectChanges.GetRemovedDocuments().Any())
+                return null;
+
+            foreach (var documentId in projectChanges.GetChangedDocuments())
+            {
+                var before = original.GetDocument(documentId);
+                var after = changed.GetDocument(documentId);
+                if (before is null || after is null
+                    || before.FilePath is not string path
+                    || session.GetDocument(path) is null)
+                    return null;
+
+                var oldText = await before.GetTextAsync(ct);
+                var newText = await after.GetTextAsync(ct);
+                if (oldText.ContentEquals(newText))
+                    continue;
+
+                changes.Add(new DocumentChange(Path.GetFullPath(path), oldText.ToString(), newText.ToString()));
+            }
+        }
+
+        return [.. changes.OrderBy(c => c.FilePath, StringComparer.OrdinalIgnoreCase)];
     }
 
     private enum FixChoiceKind { Chosen, NoFixForEquivalenceKey, Ambiguous }
@@ -330,46 +370,31 @@ public sealed class CodeFixRunner
                 if (group.Key is null)
                     continue;
 
-                var document = changedSolution.GetDocument(session.GetDocument(group.Key)?.Id);
-                if (document is null)
+                var documentId = session.GetDocument(group.Key)?.Id;
+                if (documentId is null || changedSolution.GetDocument(documentId) is null)
                     continue;
 
-                var finalDocument = await ApplyIterativeFixesAsync(
-                    document, [.. group.OrderByDescending(d => d.Location.SourceSpan.Start)],
+                changedSolution = await ApplyIterativeFixesAsync(
+                    changedSolution, documentId, [.. group.OrderByDescending(d => d.Location.SourceSpan.Start)],
                     fixProviderInstance, chosenKey, ct);
-
-                changedSolution = changedSolution.WithDocumentText(finalDocument.Id, await finalDocument.GetTextAsync(ct));
             }
         }
 
-        // Diff against the original text to find which files actually changed.
+        // Every file the pass changed, including side edits to files without a diagnostic.
+        var collected = await CollectChangesAsync(session, project.Solution, changedSolution, ct);
+        if (collected is null)
+            return NotFound(diagnosticId, FixNotFoundReason.UnsupportedFix, diagnostics.Length);
+
         var diagnosticsByFile = diagnostics
             .Where(d => d.Location.SourceTree?.FilePath is not null)
-            .GroupBy(d => d.Location.SourceTree!.FilePath!, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(d => Path.GetFullPath(d.Location.SourceTree!.FilePath!), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<FixAllUnfixedDiagnostic>)[.. g.Select(ToLocation)], StringComparer.OrdinalIgnoreCase);
 
-        var changes = new List<FixAllFileChange>();
-        foreach (var group in diagnostics.GroupBy(d => d.Location.SourceTree?.FilePath))
-        {
-            if (group.Key is null)
-                continue;
-
-            var originalDocument = session.GetDocument(group.Key);
-            if (originalDocument is null)
-                continue;
-
-            var changedDocument = changedSolution.GetDocument(originalDocument.Id);
-            if (changedDocument is null)
-                continue;
-
-            var originalText = (await originalDocument.GetTextAsync(ct)).ToString();
-            var newText = (await changedDocument.GetTextAsync(ct)).ToString();
-            if (!string.Equals(originalText, newText, StringComparison.Ordinal))
-            {
-                diagnosticsByFile.TryGetValue(group.Key, out var fileDiagnostics);
-                changes.Add(new FixAllFileChange(group.Key, originalText, newText, fileDiagnostics ?? []));
-            }
-        }
+        var changes = collected
+            .Select(c => new FixAllFileChange(
+                c.FilePath, c.OriginalContent, c.ModifiedContent,
+                diagnosticsByFile.TryGetValue(c.FilePath, out var fileDiagnostics) ? fileDiagnostics : []))
+            .ToList();
 
         // Re-check the changed solution for any remaining occurrences of the rule so
         // callers know exactly what, if anything, the fix-all pass could not resolve.
@@ -390,15 +415,20 @@ public sealed class CodeFixRunner
     /// order, so each successive fix operates on text that hasn't shifted above the next target span.
     /// Best-effort: a diagnostic whose action can't be located or applied is simply left in place —
     /// the caller's remaining-diagnostics recheck reports it as unfixed rather than dropping it silently.
+    /// The whole <see cref="Solution"/> is threaded through, so an action's edits to other documents
+    /// survive. Such a cross-document side edit into a file whose own diagnostics are still pending is
+    /// best-effort as well: it may shift their spans, and the recheck then reports what was missed.
     /// </summary>
-    private static async Task<Document> ApplyIterativeFixesAsync(
-        Document document,
+    private static async Task<Solution> ApplyIterativeFixesAsync(
+        Solution solution,
+        DocumentId documentId,
         IReadOnlyList<Diagnostic> orderedDiagnostics,
         CodeFixProvider fixProvider,
         string equivalenceKey,
         CancellationToken ct)
     {
-        var current = document;
+        var changedSolution = solution;
+        var current = solution.GetDocument(documentId)!;
         foreach (var diagnostic in orderedDiagnostics)
         {
             var actions = new List<CodeAction>();
@@ -419,12 +449,15 @@ public sealed class CodeFixRunner
                     continue;
 
                 var changedDoc = applyChanges.ChangedSolution.GetDocument(current.Id);
-                if (changedDoc is not null)
-                    current = changedDoc;
+                if (changedDoc is null)
+                    continue;
+
+                changedSolution = applyChanges.ChangedSolution;
+                current = changedDoc;
             }
         }
 
-        return current;
+        return changedSolution;
     }
 
     /// <summary>

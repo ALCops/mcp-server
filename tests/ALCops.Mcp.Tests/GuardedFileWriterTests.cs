@@ -247,6 +247,27 @@ public class GuardedFileWriterTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_AllOrNothing_OneStale_CommitsNothing()
+    {
+        var (a, b, c) = await CreateThreeFiles();
+        await File.WriteAllTextAsync(b, "edited elsewhere");
+
+        var result = await _writer.WriteAllIfUnchangedAsync(
+            [Write(a, "a", "A"), Write(b, "b", "B"), Write(c, "c", "C")], CancellationToken.None, allOrNothing: true);
+
+        Assert.Empty(result.Written);
+        var stale = Assert.Single(result.StaleConflicts);
+        Assert.Equal(b, stale.FilePath);
+        Assert.Equal(FileWriteConflictKind.StaleFile, stale.Kind);
+        Assert.Empty(result.RolledBack);
+        Assert.Null(result.FailureMessage);
+        Assert.Equal("a", await File.ReadAllTextAsync(a));
+        Assert.Equal("edited elsewhere", await File.ReadAllTextAsync(b));
+        Assert.Equal("c", await File.ReadAllTextAsync(c));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
     public async Task Batch_SecondOfThreeCommitFails_RollsBackFirst_ReportsAll()
     {
         var (a, b, c) = await CreateThreeFiles();
