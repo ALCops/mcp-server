@@ -16,6 +16,8 @@ public sealed class ApplyFixTool
         "in which case nothing is written and the error Stale is returned (re-run). " +
         "A file that is not valid in its detected encoding (e.g. a Windows-1252 file read as UTF-8) is never re-encoded: " +
         "nothing is written and the error Faulted with reason UnsupportedEncoding is returned (reason ReadFailed if the file cannot be read, WriteFailed if the write fails). " +
+        "equivalenceKey is optional: without it, the rule's single fix is applied, and if the rule offers more than one distinct fix the error Ambiguous is returned whose candidates " +
+        "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
         "When no fix matches, returns NotFound with a reason, the same as get_fixes; for NoFixForEquivalenceKey, candidates lists the keys that do apply. " +
         "The write is atomic and preserves the file's encoding and line endings. " +
         ToolDescriptions.VerifyAfterWrite)]
@@ -29,7 +31,7 @@ public sealed class ApplyFixTool
         [Description("The diagnostic rule ID (e.g., 'AC0018', 'LC0001').")] string diagnosticId,
         [Description("Line number of the diagnostic (1-based).")] int line,
         [Description("Column number of the diagnostic (1-based).")] int column,
-        [Description("Equivalence key of the fix to apply (from get_fixes results), verbatim.")] string equivalenceKey,
+        [Description("Optional: equivalence key of the fix to apply (from get_fixes or an Ambiguous error's candidates), verbatim. Needed only when the rule offers several distinct fixes.")] string? equivalenceKey = null,
         [Description("Optional: JSON array of analyzer specs (e.g., '[\"${CodeCop}\",\"${UICop}\"]'). If omitted, auto-discovers from .vscode/settings.json.")] string? analyzers = null,
         CancellationToken cancellationToken = default)
     {
@@ -49,6 +51,11 @@ public sealed class ApplyFixTool
 
             var outcome = await codeFixRunner.ApplyFixAsync(
                 session, filePath, diagnosticId, line, column, equivalenceKey, analyzerSet, cancellationToken);
+
+            if (outcome.Status == FixApplyStatus.Ambiguous)
+                return ToolErrors.Ambiguous(
+                    $"{diagnosticId} has {outcome.Candidates.Count} distinct fixes. Pass one candidate's equivalenceKey verbatim.",
+                    outcome.Candidates, filePath, diagnosticId);
 
             if (outcome.NotFoundReason is { } reason)
                 return ToolErrors.NotFound(reason,

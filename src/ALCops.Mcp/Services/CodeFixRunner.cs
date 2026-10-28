@@ -36,8 +36,11 @@ public sealed class CodeFixRunner
     }
 
     /// <summary>
-    /// Applies a specific code fix and returns the modified content without writing to disk, or the
-    /// reason no fix applies.
+    /// Computes a code fix and returns the modified content without writing to disk, or the reason no
+    /// fix applies. With <paramref name="equivalenceKey"/>, the first action with that key is applied
+    /// (<see cref="FixNotFoundReason.NoFixForEquivalenceKey"/> with candidates when none has it).
+    /// Without it, the single distinct fix is applied, or <see cref="FixApplyStatus.Ambiguous"/> is
+    /// returned with the candidates when there are several.
     /// </summary>
     public async Task<FixApplyResult> ApplyFixAsync(
         ProjectSession session,
@@ -45,7 +48,7 @@ public sealed class CodeFixRunner
         string diagnosticId,
         int line,
         int column,
-        string equivalenceKey,
+        string? equivalenceKey,
         IAnalyzerProvider analyzerProvider,
         CancellationToken ct = default)
     {
@@ -58,46 +61,78 @@ public sealed class CodeFixRunner
         if (pairs.Count == 0)
             return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic);
 
-        var matching = pairs.Where(p => KeyOf(p.Action) == equivalenceKey).ToList();
-        if (matching.Count == 0)
-            return FixApplyResult.NotFound(FixNotFoundReason.NoFixForEquivalenceKey, ToCandidates(pairs));
-
-        var originalText = (await document.GetTextAsync(ct)).ToString();
-
-        foreach (var (_, matchingAction) in matching)
+        var choice = ChooseFix(pairs, equivalenceKey);
+        switch (choice.Kind)
         {
-            // Apply the code action to get the modified document
-            var operations = await matchingAction.GetOperationsAsync(ct);
-
-            foreach (var operation in operations)
-            {
-                if (operation is ApplyChangesOperation applyChanges)
-                {
-                    var changedSolution = applyChanges.ChangedSolution;
-                    var changedDocument = changedSolution.GetDocument(document.Id);
-                    if (changedDocument is null)
-                        continue;
-
-                    var newText = await changedDocument.GetTextAsync(ct);
-                    var modifiedContent = newText?.ToString() ?? "";
-
-                    return FixApplyResult.Applied(new CodeFixResult(
-                        FilePath: filePath,
-                        OriginalContent: originalText,
-                        ModifiedContent: modifiedContent,
-                        FixTitle: matchingAction.Title));
-                }
-            }
+            case FixChoiceKind.NoFixForEquivalenceKey:
+                return FixApplyResult.NotFound(FixNotFoundReason.NoFixForEquivalenceKey, choice.Candidates);
+            case FixChoiceKind.Ambiguous:
+                return FixApplyResult.Ambiguous(choice.Candidates);
         }
 
-        // The key matched, but no matching action changes this document. Same reason as "no fix at
+        var action = choice.Action!;
+        var chosenKey = KeyOf(action);
+        var originalText = (await document.GetTextAsync(ct)).ToString();
+
+        var operations = await action.GetOperationsAsync(ct);
+        var applyChanges = operations.OfType<ApplyChangesOperation>().FirstOrDefault();
+        var changedDocument = applyChanges?.ChangedSolution.GetDocument(document.Id);
+        var modifiedContent = changedDocument is null ? null : (await changedDocument.GetTextAsync(ct))?.ToString();
+        if (modifiedContent is not null && !string.Equals(modifiedContent, originalText, StringComparison.Ordinal))
+        {
+            return FixApplyResult.Applied(new CodeFixResult(
+                FilePath: filePath,
+                OriginalContent: originalText,
+                ModifiedContent: modifiedContent,
+                FixTitle: action.Title));
+        }
+
+        // The fix exists, but its action changes nothing in this document. Same reason as "no fix at
         // all", but get_fixes did advertise this key, so the message says what actually happened.
         return FixApplyResult.NotFound(FixNotFoundReason.NoFixForDiagnostic) with
         {
             MessageOverride =
-                $"A fix with equivalence key '{equivalenceKey}' exists for {diagnosticId} at {filePath}:{line}:{column} " +
+                $"A fix with equivalence key '{chosenKey}' exists for {diagnosticId} at {filePath}:{line}:{column} " +
                 "but produced no change in this document (it may edit another file, which apply_fix does not support yet)."
         };
+    }
+
+    private enum FixChoiceKind { Chosen, NoFixForEquivalenceKey, Ambiguous }
+
+    /// <summary>
+    /// The fix <see cref="ChooseFix"/> picked (<see cref="Provider"/>/<see cref="Action"/>), or why it
+    /// picked none; <see cref="Candidates"/> is filled for the two failure kinds.
+    /// </summary>
+    private readonly record struct FixChoice(
+        FixChoiceKind Kind, CodeFixProvider? Provider, CodeAction? Action, IReadOnlyList<CodeFixInfo> Candidates);
+
+    /// <summary>
+    /// The one place apply_fix and apply_fix_all decide which fix to apply. With
+    /// <paramref name="requestedKey"/>, the first action with that key (as advertised by
+    /// <see cref="KeyOf"/>), or <see cref="FixChoiceKind.NoFixForEquivalenceKey"/>. Without it, the first
+    /// action when every action shares one key, or <see cref="FixChoiceKind.Ambiguous"/>. Candidates are
+    /// <see cref="ToCandidates"/>, so the first occurrence per key is both advertised and applied.
+    /// <paramref name="candidates"/> must not be empty.
+    /// </summary>
+    private static FixChoice ChooseFix(
+        IReadOnlyList<(CodeFixProvider Provider, CodeAction Action)> candidates, string? requestedKey)
+    {
+        if (requestedKey is not null)
+        {
+            foreach (var (provider, action) in candidates)
+            {
+                if (KeyOf(action) == requestedKey)
+                    return new FixChoice(FixChoiceKind.Chosen, provider, action, []);
+            }
+
+            return new FixChoice(FixChoiceKind.NoFixForEquivalenceKey, null, null, ToCandidates(candidates));
+        }
+
+        var distinct = ToCandidates(candidates);
+        if (distinct.Count > 1)
+            return new FixChoice(FixChoiceKind.Ambiguous, null, null, distinct);
+
+        return new FixChoice(FixChoiceKind.Chosen, candidates[0].Provider, candidates[0].Action, []);
     }
 
     /// <summary>
@@ -240,29 +275,21 @@ public sealed class CodeFixRunner
         if (candidateActions.Count == 0)
             return NotFound(diagnosticId, FixNotFoundReason.NoFixForDiagnostic, diagnostics.Length);
 
-        (CodeFixProvider Provider, CodeAction Action) chosen;
-        if (equivalenceKey is not null)
+        var choice = ChooseFix(candidateActions, equivalenceKey);
+        switch (choice.Kind)
         {
-            var match = candidateActions.FirstOrDefault(c => KeyOf(c.Action) == equivalenceKey);
-            if (match.Action is null)
+            case FixChoiceKind.NoFixForEquivalenceKey:
                 return NotFound(diagnosticId, FixNotFoundReason.NoFixForEquivalenceKey, diagnostics.Length,
-                    ToCandidates(candidateActions));
-            chosen = match;
-        }
-        else
-        {
-            var candidates = ToCandidates(candidateActions);
-            if (candidates.Count > 1)
+                    choice.Candidates);
+            case FixChoiceKind.Ambiguous:
                 return new FixAllResult(
                     FixAllStatus.Ambiguous, diagnosticId, diagnostics.Length,
-                    null, null, [], candidates, []);
-
-            chosen = candidateActions[0];
+                    null, null, [], choice.Candidates, []);
         }
 
-        var fixProviderInstance = chosen.Provider;
-        var chosenKey = KeyOf(chosen.Action);
-        var fixTitle = chosen.Action.Title;
+        var fixProviderInstance = choice.Provider!;
+        var chosenKey = KeyOf(choice.Action!);
+        var fixTitle = choice.Action!.Title;
 
         var project = session.GetProject();
         var diagnosticProvider = new PrecomputedDiagnosticProvider(diagnostics);

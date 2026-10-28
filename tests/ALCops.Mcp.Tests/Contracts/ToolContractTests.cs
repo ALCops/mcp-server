@@ -150,7 +150,7 @@ public sealed class ToolContractTests(ToolContractFixture fixture) : IClassFixtu
         { "get_fixes", ["projectPath", "filePath", "diagnosticId", "line", "column", "analyzers"],
             ["projectPath", "filePath", "diagnosticId", "line", "column"] },
         { "apply_fix", ["projectPath", "filePath", "diagnosticId", "line", "column", "equivalenceKey", "analyzers"],
-            ["projectPath", "filePath", "diagnosticId", "line", "column", "equivalenceKey"] },
+            ["projectPath", "filePath", "diagnosticId", "line", "column"] },
         { "apply_fix_all", ["projectPath", "diagnosticId", "scope", "filePath", "equivalenceKey", "analyzers", "dryRun"],
             ["projectPath", "diagnosticId"] },
     };

@@ -1,6 +1,7 @@
 using ALCops.Mcp.Models;
 using ALCops.Mcp.Services;
 using ALCops.Mcp.Tools;
+using Microsoft.Dynamics.Nav.CodeAnalysis.CodeFixes;
 using Xunit;
 
 namespace ALCops.Mcp.Tests;
@@ -272,6 +273,83 @@ public class ApplyFixToolTests
             });
             Assert.Contains("no-such-key", root.GetProperty("message").GetString());
             Assert.Equal(originalBytes, await File.ReadAllBytesAsync(filePath));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_NoKeySingleFix_AppliesAndWrites()
+    {
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("ApplyFixProject", "alcops-applyfix-nokey-test");
+
+        try
+        {
+            var filePath = Path.Combine(tempProjectPath, "MyPage.al");
+
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            var result = await ApplyFixTool.ApplyFix(
+                sessionManager, new CodeFixRunner(), analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, filePath, "LC0020", 11, 17);
+
+            Assert.True(ToolResultAssert.Ok(result).GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
+            Assert.Equal(1, CountOccurrences(await File.ReadAllTextAsync(filePath), "ApplicationArea = All;"));
+        }
+        finally
+        {
+            TestAnalyzers.TryDeleteDirectory(tempProjectPath);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyFix_NoKeySeveralFixes_ReturnsAmbiguousThenAppliesWithReturnedKey()
+    {
+        // AC0012 in FixAllProject/Codeunit.al has two fix providers, so no key is ambiguous.
+        var tempProjectPath = TestAnalyzers.CopyFixtureWithAnalyzers("FixAllProject", "alcops-applyfix-ambiguous-test");
+
+        try
+        {
+            using var sessionManager = new ProjectSessionManager(new ProjectLoader());
+            var runner = new CodeFixRunner();
+            var (analyzerResolver, _) = TestAnalyzers.CreateAnalyzerResolver();
+
+            // Locate the occurrence the way FixRoundTripTests does: a fix-all pass with a key.
+            var session = await sessionManager.GetOrLoadProjectAsync(tempProjectPath);
+            var analyzerSet = await analyzerResolver.ResolveAsync(tempProjectPath, null);
+            var probeKeys = await runner.ApplyFixAllAsync(
+                session, "AC0012", FixAllScope.Project, null, null, analyzerSet);
+            Assert.Equal(FixAllStatus.Ambiguous, probeKeys.Status);
+            var probe = await runner.ApplyFixAllAsync(
+                session, "AC0012", FixAllScope.Project, null, probeKeys.Candidates[0].EquivalenceKey, analyzerSet);
+            Assert.Equal(FixAllStatus.Completed, probe.Status);
+            var occurrence = probe.Changes[0].Diagnostics[0];
+            var originalBytes = await File.ReadAllBytesAsync(occurrence.FilePath);
+
+            var ambiguous = await ApplyFixTool.ApplyFix(
+                sessionManager, runner, analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, occurrence.FilePath, "AC0012", occurrence.Line, occurrence.Column);
+
+            var root = ToolResultAssert.Error(ambiguous, "Ambiguous");
+            Assert.False(root.TryGetProperty("reason", out _));
+            Assert.Equal("AC0012", root.GetProperty("diagnosticId").GetString());
+            Assert.Contains("distinct fixes", root.GetProperty("message").GetString());
+            var keys = root.GetProperty("candidates").EnumerateArray()
+                .Select(c => c.GetProperty("equivalenceKey").GetString()!)
+                .ToList();
+            Assert.True(keys.Count > 1, ToolResultAssert.Text(ambiguous));
+            Assert.Equal(keys.Count, keys.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(occurrence.FilePath));
+
+            var applied = await ApplyFixTool.ApplyFix(
+                sessionManager, runner, analyzerResolver, new GuardedFileWriter(),
+                tempProjectPath, occurrence.FilePath, "AC0012", occurrence.Line, occurrence.Column, keys[0]);
+
+            Assert.True(ToolResultAssert.Ok(applied).GetProperty("applied").GetBoolean(), ToolResultAssert.Text(applied));
+            Assert.NotEqual(originalBytes, await File.ReadAllBytesAsync(occurrence.FilePath));
         }
         finally
         {
