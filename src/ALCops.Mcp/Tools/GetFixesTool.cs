@@ -14,6 +14,7 @@ public sealed class GetFixesTool
      Description("Get available code fixes for a specific diagnostic at a location. " +
         "Returns { diagnosticId, filePath, line, column, fixes: [{ equivalenceKey, title, providerName }] }; " +
         "pass a fix's equivalenceKey verbatim to apply_fix (or apply_fix_all); the key is needed only when a rule offers several fixes, otherwise apply_fix can be called without it. fixes is never empty. " +
+        "A listed fix can still be refused by apply_fix / apply_fix_all as NotFound with reason UnsupportedFix when it adds, removes or renames files or edits a file outside the project. " +
         "When nothing matches, returns the error NotFound with a reason: NoDiagnosticAtPosition (re-run analyze and use its line/column), " +
         "SuppressedByRuleset or SuppressedByPragma (nothing to fix), NoFixProvider, NoAnalyzerForRule, FileNotInProject or NoFixForDiagnostic.")]
     public static async Task<CallToolResult> GetFixes(

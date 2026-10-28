@@ -19,7 +19,7 @@ namespace ALCops.Mcp.Services;
 /// The diff is cut at a line boundary at or before <see cref="MaxDiffChars"/> characters (200 KB,
 /// 200 × 1024 characters), with <c>Truncated</c> set; hunks stop being built once the output is past
 /// the cap, a line is never separated from the <c>\ No newline at end of file</c> marker that follows
-/// it, and a cut hunk keeps its original header, so its counts can exceed the lines shown.
+/// it, the diff never ends on a hunk header without lines, and a cut hunk keeps its original header, so its counts can exceed the lines shown.
 /// </remarks>
 internal static class UnifiedDiff
 {
@@ -74,7 +74,8 @@ internal static class UnifiedDiff
     /// <summary>
     /// <paramref name="output"/> cut at the last line boundary at or before <paramref name="maxChars"/>;
     /// when the line after that boundary is the no-newline marker, the cut moves back one line so the
-    /// marker is never separated from the line it belongs to.
+    /// marker is never separated from the line it belongs to. The result never ends on a bare hunk
+    /// header: if its last line is one, the cut moves back before it too.
     /// </summary>
     internal static string Cut(StringBuilder output, int maxChars)
     {
@@ -84,6 +85,13 @@ internal static class UnifiedDiff
         var cut = output.ToString(0, maxChars).LastIndexOf('\n');
         if (cut >= 0 && StartsWithAt(output, cut + 1, NoNewlineMarker))
             cut = output.ToString(0, cut).LastIndexOf('\n');
+
+        if (cut >= 0)
+        {
+            var lastLineStart = output.ToString(0, cut).LastIndexOf('\n') + 1;
+            if (StartsWithAt(output, lastLineStart, "@@ "))
+                cut = lastLineStart - 1;
+        }
 
         return cut < 0 ? "" : output.ToString(0, cut + 1);
     }

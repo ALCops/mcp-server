@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using ALCops.Mcp.Services;
 using Xunit;
@@ -219,6 +220,38 @@ public sealed class UnifiedDiffTests
         Assert.DoesNotContain(lastLine, diff);
         Assert.EndsWith("+" + pad + "\n", diff);
         Assert.True(diff.Length < UnifiedDiff.MaxDiffChars, $"{diff.Length}");
+    }
+
+    [Fact]
+    public void Cut_MarkerLineFirstInItsHunk_DropsTheBareHunkHeaderToo()
+    {
+        // The unterminated line is the first body line of the second hunk and the cut lands right
+        // before its marker: moving back past that line would leave the hunk header as the last line.
+        var output = new StringBuilder()
+            .Append("@@ -1 +1 @@\n-a\n+b\n")
+            .Append("@@ -9 +9 @@\n")
+            .Append("-last\n")
+            .Append(UnifiedDiff.NoNewlineMarker).Append('\n')
+            .Append("+other\n");
+        var marker = output.ToString().IndexOf(UnifiedDiff.NoNewlineMarker, StringComparison.Ordinal);
+
+        var cut = UnifiedDiff.Cut(output, marker);
+
+        Assert.Equal("@@ -1 +1 @@\n-a\n+b\n", cut);
+        Assert.DoesNotMatch(@"(^|\n)@@ [^\n]*\n$", cut);
+    }
+
+    [Fact]
+    public void Cut_OnlyAHunkHeaderBeforeTheMarkerLine_IsEmpty()
+    {
+        var output = new StringBuilder()
+            .Append("@@ -1 +1 @@\n")
+            .Append("-last\n")
+            .Append(UnifiedDiff.NoNewlineMarker).Append('\n')
+            .Append("+other\n");
+        var marker = output.ToString().IndexOf(UnifiedDiff.NoNewlineMarker, StringComparison.Ordinal);
+
+        Assert.Equal("", UnifiedDiff.Cut(output, marker));
     }
 
     [Fact]

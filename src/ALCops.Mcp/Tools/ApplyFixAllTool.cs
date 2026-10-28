@@ -167,7 +167,7 @@ public sealed class ApplyFixAllTool
 
             // After an all-or-nothing refusal every change is unwritten, so all of their diagnostics are unfixed.
             var unfixed = nothingWritten
-                ? MergeUnfixedPaths(result, result.Changes.Select(c => c.FilePath))
+                ? MergeUnfixedAfterRefusal(result)
                 : MergeUnfixed(result, conflicts);
 
             // changes describes exactly filesChanged: every computed change on a dry run, else the written files.
@@ -204,6 +204,21 @@ public sealed class ApplyFixAllTool
     internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixed(
         FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts) =>
         MergeUnfixedPaths(result, conflicts.Select(c => c.FilePath));
+
+    /// <summary>
+    /// The unfixed diagnostics when nothing was written: <see cref="FixAllResult.Unfixed"/> is in
+    /// post-fix coordinates, which do not exist on disk for a changed file, so only its entries for
+    /// untouched files are kept, plus the original diagnostics of every change.
+    /// </summary>
+    internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixedAfterRefusal(FixAllResult result)
+    {
+        var changedPaths = new HashSet<string>(result.Changes.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
+        return result.Unfixed
+            .Where(d => !changedPaths.Contains(d.FilePath))
+            .Concat(result.Changes.SelectMany(c => c.Diagnostics))
+            .Distinct()
+            .ToList();
+    }
 
     /// <summary>
     /// <see cref="FixAllResult.Unfixed"/> plus the original diagnostics of every change in

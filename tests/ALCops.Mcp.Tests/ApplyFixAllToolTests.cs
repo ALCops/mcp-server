@@ -581,4 +581,32 @@ public class ApplyFixAllToolTests
         Assert.Single(merged);
         Assert.Equal(fileBDiag, merged[0]);
     }
+
+    [Fact]
+    public void MergeUnfixedAfterRefusal_DropsPostFixResidualsOfChangedFiles()
+    {
+        // Unfixed is in post-fix coordinates. After an all-or-nothing refusal nothing was written, so a
+        // changed file's residual (here shifted from line 10 to line 12) does not exist on disk; only
+        // untouched files keep their Unfixed entries, and every change reports its original diagnostics.
+        var fileAOriginal = new FixAllUnfixedDiagnostic("C:\\Src\\FileA.al", 10, 1);
+        var fileAOther = new FixAllUnfixedDiagnostic("C:\\Src\\FileA.al", 20, 1);
+        var fileAResidual = new FixAllUnfixedDiagnostic("c:\\src\\filea.al", 12, 1);
+        var untouchedResidual = new FixAllUnfixedDiagnostic("C:\\Src\\FileC.al", 7, 3);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 3, "Fix", "key",
+            [
+                new FixAllFileChange("C:\\Src\\FileA.al", "old", "new", [fileAOriginal, fileAOther]),
+                new FixAllFileChange("C:\\Src\\FileB.al", "old", "new", []),
+            ],
+            [], [fileAResidual, untouchedResidual, untouchedResidual]);
+
+        var merged = ApplyFixAllTool.MergeUnfixedAfterRefusal(result);
+
+        Assert.DoesNotContain(fileAResidual, merged);
+        Assert.Equal(3, merged.Count);
+        Assert.Contains(untouchedResidual, merged);
+        Assert.Contains(fileAOriginal, merged);
+        Assert.Contains(fileAOther, merged);
+        Assert.Equal(merged.Count, merged.Distinct().Count());
+    }
 }

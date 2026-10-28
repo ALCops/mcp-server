@@ -35,9 +35,10 @@ public sealed class MultiDocumentFixTests
                 SessionManager, Runner, DecoratedProvider.Resolving(Resolver, provider), writer ?? new GuardedFileWriter(),
                 ProjectPath, PathOf("PageA.al"), Rule, 11, 17, key, null, dryRun, CancellationToken.None);
 
-        public Task<ModelContextProtocol.Protocol.CallToolResult> ApplyFixAllAsync(CodeFixProvider provider, bool dryRun = false) =>
+        public Task<ModelContextProtocol.Protocol.CallToolResult> ApplyFixAllAsync(
+            CodeFixProvider provider, bool dryRun = false, GuardedFileWriter? writer = null) =>
             ApplyFixAllTool.RunAsync(
-                SessionManager, Runner, DecoratedProvider.Resolving(Resolver, provider), new GuardedFileWriter(),
+                SessionManager, Runner, DecoratedProvider.Resolving(Resolver, provider), writer ?? new GuardedFileWriter(),
                 ProjectPath, Rule, "project", null, null, null, dryRun, CancellationToken.None);
 
         public static readonly string[] AllFiles = ["PageA.al", "PageB.al", "PageC.al", "Codeunit.al"];
@@ -273,6 +274,39 @@ public sealed class MultiDocumentFixTests
         Assert.Equal(pageABefore, ctx.Bytes("PageA.al"));
         Assert.Equal(pageBBefore, ctx.Bytes("PageB.al"));
         Assert.Equal(pageCEdited, ctx.Bytes("PageC.al"));
+        Assert.Empty(ctx.TempFiles());
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_AllOrNothing_SecondCommitFails_RollsBackAndReportsEveryStagedFile()
+    {
+        using var ctx = new Context();
+        var before = ctx.Snapshot();
+
+        // The side edit to PageC.al turns all-or-nothing on. Changes are committed in path order:
+        // PageA.al is written, PageB.al's move fails, PageC.al is never reached.
+        var result = await ctx.ApplyFixAllAsync(
+            new TwoDocumentFixProvider("PageC.al"), writer: GuardedFileWriterTests.FailingOnCalls(2));
+
+        var root = ToolResultAssert.Ok(result);
+        var text = ToolResultAssert.Text(result);
+        Assert.False(root.GetProperty("applied").GetBoolean(), text);
+        Assert.Empty(root.GetProperty("filesChanged").EnumerateArray());
+        Assert.Empty(root.GetProperty("changes").EnumerateArray());
+
+        var conflicts = root.GetProperty("conflicts").EnumerateArray()
+            .ToDictionary(e => Path.GetFileName(e.GetProperty("filePath").GetString()!), e => e.GetProperty("kind").GetString());
+        Assert.Equal(["PageA.al", "PageB.al", "PageC.al"], conflicts.Keys.Order());
+        Assert.Equal(FileWriteConflictKind.RolledBack, conflicts["PageA.al"]);
+        Assert.Equal(FileWriteConflictKind.WriteFailed, conflicts["PageB.al"]);
+        Assert.Equal(FileWriteConflictKind.NotWritten, conflicts["PageC.al"]);
+
+        var message = root.GetProperty("message").GetString();
+        Assert.Contains("could not be written", message);
+        Assert.Contains("restored", message);
+
+        foreach (var name in Context.AllFiles)
+            Assert.Equal(before[name], ctx.Bytes(name));
         Assert.Empty(ctx.TempFiles());
     }
 
