@@ -69,7 +69,7 @@ Pass `--no-proxy` to serve only the native tools. Use it when your agent already
 
 ### Previewing a fix
 
-Pass `dryRun: true` to `apply_fix` or `apply_fix_all` to see what a fix would change without writing anything. Both tools return the same `changes` on a real write, so the result always shows what was written. Each entry's `diff` is a unified diff of hunks only (`@@ -a,b +c,d @@` headers with ` `, `-` and `+` lines and 3 lines of context, no `---`/`+++` header since `filePath` is beside it); lines are compared without their line endings, so an empty `diff` with the file listed means only line endings changed. A diff longer than 200 KB (200 × 1024 characters) is cut at a line boundary and has `truncated: true`; a truncated diff keeps its original hunk headers, so their counts can exceed the lines shown.
+Pass `dryRun: true` to `apply_fix` or `apply_fix_all` to see what a fix would change without writing anything. Both tools return the same `changes` on a real write, so the result always shows what was written. Each entry's `diff` is a unified diff of hunks only (`@@ -a,b +c,d @@` headers with ` `, `-` and `+` lines and 3 lines of context, no `---`/`+++` header since `filePath` is beside it); lines are compared without their line endings, so an empty `diff` with the file listed means only line endings changed. A diff longer than 200 KB (200 × 1024 characters) is cut at a line boundary and has `truncated: true`; a truncated diff keeps its original hunk headers, so their counts can exceed the lines shown, and an empty `diff` with `truncated: true` means the first changed line alone exceeds the cap.
 
 ### Verifying a fix
 

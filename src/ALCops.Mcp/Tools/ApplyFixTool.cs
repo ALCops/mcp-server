@@ -13,7 +13,7 @@ public sealed class ApplyFixTool
         ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false),
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
         "Writes the fixed content to the file on disk unless dryRun is true or the file changed after the fix was computed; " +
-        "returns { applied, dryRun, diagnosticId, fixTitle, equivalenceKey, filePath, changes } where equivalenceKey is the key that was applied and " +
+        "returns { applied, dryRun, diagnosticId, fixTitle, equivalenceKey, filePath, changes } where equivalenceKey is the key that was applied, filePath is the diagnostic's file (a fix may edit other files only, so read changes, not filePath, to see what changed) and " +
         "changes lists every file the fix changes (or would change, on a dry run) with a hunks-only unified diff (3 context lines; diff cut at 200 KB (200 × 1024 characters) per file with truncated: true). " +
         "If a file changed after the fix was computed, nothing is written and the error Stale is returned (re-run). " +
         "A fix that edits several files writes all of them or none. A fix that adds, removes or renames files, or edits a file outside the project, is NotFound with reason UnsupportedFix and nothing is written. " +

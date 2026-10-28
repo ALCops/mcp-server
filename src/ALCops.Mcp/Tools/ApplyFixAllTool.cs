@@ -165,10 +165,10 @@ public sealed class ApplyFixAllTool
                     };
             }
 
-            // After an all-or-nothing refusal every change is unwritten, so all of their diagnostics are unfixed.
-            var unfixed = nothingWritten
-                ? MergeUnfixedAfterRefusal(result)
-                : MergeUnfixed(result, conflicts);
+            // A dry run reports what would remain after the fix; a real run reports what remains on disk,
+            // which for every change that was not written (skipped, refused or rolled back) is its
+            // original diagnostics, not the post-fix residuals.
+            var unfixed = dryRun ? result.Unfixed : MergeUnfixed(result, written);
 
             // changes describes exactly filesChanged: every computed change on a dry run, else the written files.
             var changedFiles = dryRun
@@ -201,42 +201,26 @@ public sealed class ApplyFixAllTool
         }
     }
 
+    /// <summary>
+    /// The unfixed diagnostics of a real run. <see cref="FixAllResult.Unfixed"/> is in post-fix
+    /// coordinates, which only exist on disk for files that were written (<paramref name="writtenPaths"/>)
+    /// or not changed at all. For every change that was not written (skipped as a conflict, refused
+    /// all-or-nothing, or rolled back) its residuals are dropped and its original diagnostics are
+    /// reported instead. Paths compare case-insensitively; duplicates (a residual the fallback could
+    /// not fix that is also an original) are listed once.
+    /// </summary>
     internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixed(
-        FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts) =>
-        MergeUnfixedPaths(result, conflicts.Select(c => c.FilePath));
-
-    /// <summary>
-    /// The unfixed diagnostics when nothing was written: <see cref="FixAllResult.Unfixed"/> is in
-    /// post-fix coordinates, which do not exist on disk for a changed file, so only its entries for
-    /// untouched files are kept, plus the original diagnostics of every change.
-    /// </summary>
-    internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixedAfterRefusal(FixAllResult result)
+        FixAllResult result, IReadOnlyCollection<string> writtenPaths)
     {
-        var changedPaths = new HashSet<string>(result.Changes.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
-        return result.Unfixed
-            .Where(d => !changedPaths.Contains(d.FilePath))
-            .Concat(result.Changes.SelectMany(c => c.Diagnostics))
-            .Distinct()
-            .ToList();
-    }
-
-    /// <summary>
-    /// <see cref="FixAllResult.Unfixed"/> plus the original diagnostics of every change in
-    /// <paramref name="unwrittenPaths"/> (files that were not written, so their diagnostics remain).
-    /// </summary>
-    private static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixedPaths(
-        FixAllResult result, IEnumerable<string> unwrittenPaths)
-    {
-        var conflictPaths = new HashSet<string>(unwrittenPaths, StringComparer.OrdinalIgnoreCase);
-        if (conflictPaths.Count == 0)
+        var written = new HashSet<string>(writtenPaths, StringComparer.OrdinalIgnoreCase);
+        var unwritten = result.Changes.Where(c => !written.Contains(c.FilePath)).ToList();
+        if (unwritten.Count == 0)
             return result.Unfixed;
 
-        // A conflict file's original diagnostics may overlap with Unfixed (e.g. one the iterative
-        // fallback could not fix), so dedupe on the record's value equality.
+        var unwrittenPaths = new HashSet<string>(unwritten.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
         return result.Unfixed
-            .Concat(result.Changes
-                .Where(c => conflictPaths.Contains(c.FilePath))
-                .SelectMany(c => c.Diagnostics))
+            .Where(d => !unwrittenPaths.Contains(d.FilePath))
+            .Concat(unwritten.SelectMany(c => c.Diagnostics))
             .Distinct()
             .ToList();
     }
