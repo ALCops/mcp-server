@@ -99,8 +99,9 @@ public sealed class CodeFixRunner
     /// Every document <paramref name="changed"/> changes relative to <paramref name="original"/>, with
     /// its old and new text, ordered by file path (ordinal, case-insensitive). The only place the
     /// documents a fix changes are discovered. Returns <c>null</c> when the fix cannot be applied as
-    /// file writes: it adds or removes a project or document, or changes a document without a file
-    /// path or one the session does not track (<see cref="FixNotFoundReason.UnsupportedFix"/>).
+    /// file writes: it adds or removes a project or document, renames a document (its file path
+    /// changes), or changes a document without a file path or one the session does not track
+    /// (<see cref="FixNotFoundReason.UnsupportedFix"/>).
     /// A document whose text ends up identical is not a change.
     /// </summary>
     internal static async Task<IReadOnlyList<DocumentChange>?> CollectChangesAsync(
@@ -123,6 +124,11 @@ public sealed class CodeFixRunner
                 if (before is null || after is null
                     || before.FilePath is not string path
                     || session.GetDocument(path) is null)
+                    return null;
+
+                // A rename: the document would have to move, which is not an in-place write.
+                if (after.FilePath is not string afterPath
+                    || !string.Equals(Path.GetFullPath(afterPath), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
                     return null;
 
                 var oldText = await before.GetTextAsync(ct);

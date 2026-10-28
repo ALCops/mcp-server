@@ -15,15 +15,16 @@ public sealed class ApplyFixAllTool
      Description("Apply a code fix to every occurrence of a diagnostic rule across a project (or a single file). " +
         "Runs analysis once, then fixes all matches for that rule ID in one pass — like VS Code's 'Fix all in workspace'. " +
         "Writes changed files directly to disk unless dryRun is true. " +
-        "changes lists exactly the files in filesChanged (every computed change on a dry run, the written files otherwise, none after a rolled-back batch), " +
-        "each with a hunks-only unified diff (3 context lines; diff cut at 200 KB per file with truncated: true); conflicts carry no diff. " +
+        "changes lists exactly the files in filesChanged (every computed change on a dry run, the written files otherwise, none after a rolled-back batch, except files the rollback could not restore, which stay in filesChanged), " +
+        "each with a hunks-only unified diff (3 context lines; diff cut at 200 KB (200 × 1024 characters) per file with truncated: true); conflicts carry no diff. " +
         "If the rule offers more than one distinct fix and no equivalenceKey is given, returns the error Ambiguous whose candidates " +
         "list each fix's equivalenceKey, title and providerName; pass one equivalenceKey verbatim. " +
         "Zero occurrences is a success (applied: false, diagnosticsFound: 0), except a rule the project ruleset suppresses (NotFound with reason SuppressedByRuleset) or one no loaded analyzer reports (NotFound with reason NoAnalyzerForRule). " +
-        "Every file the fix changes is written, including side edits to files without an occurrence. A fix that adds or removes files is NotFound with reason UnsupportedFix and nothing is written. " +
+        "Every file the fix changes is written, including side edits to files without an occurrence. A fix that adds, removes or renames files, or edits a file outside the project, is NotFound with reason UnsupportedFix and nothing is written. " +
         "Changed project files are re-read from disk first. Files that change on disk while the fix is being computed " +
         "(or that cannot be read, or are not valid in their detected encoding) " +
         "are left untouched and listed in 'conflicts' (each with a 'kind') and their diagnostics remain in 'unfixedDiagnostics' (positions as analysed, so they may have shifted if the file was edited); the other files are still written. " +
+        "A fix-all whose changes include side edits to files without an occurrence is written all or none: if any file has a phase-1 conflict, nothing is written. " +
         "If a write fails, every file written in this call is restored (unless it was edited since) and all of them are listed in 'conflicts'. " +
         ToolDescriptions.VerifyAfterWrite)]
     public static async Task<CallToolResult> ApplyFixAll(
@@ -131,12 +132,17 @@ public sealed class ApplyFixAllTool
             IReadOnlyList<string> written = [];
             List<FileWriteConflict> conflicts = [];
             string? conflictMessage = null;
+            var nothingWritten = false;
 
             if (!dryRun)
             {
+                // A change without diagnostics of its own is a side edit. Skipping a stale side-edit file
+                // while writing the file whose fix made it would leave the project half-fixed, and its
+                // diagnostics could not be re-reported, so such a fix-all is written all or none.
+                var hasSideEdits = result.Changes.Any(c => c.Diagnostics.Count == 0);
                 var batch = await fileWriter.WriteAllIfUnchangedAsync(
                     [.. result.Changes.Select(c => new PendingWrite(c.FilePath, c.OriginalContent, c.ModifiedContent))],
-                    cancellationToken);
+                    cancellationToken, allOrNothing: hasSideEdits);
 
                 written = batch.Written;
                 conflicts = [.. batch.StaleConflicts, .. batch.RolledBack];
@@ -145,16 +151,24 @@ public sealed class ApplyFixAllTool
                     Console.Error.WriteLine($"Warning: {conflict.Message}");
 
                 var stale = batch.StaleConflicts.Count;
-                conflictMessage = (batch.FailureMessage, stale) switch
-                {
-                    (null, 0) => null,
-                    (null, _) => $"{stale} file(s) were skipped (changed on disk, unreadable, or not valid in their detected encoding; see conflicts); their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them.",
-                    (var failure, 0) => failure,
-                    (var failure, _) => $"{failure} {stale} other file(s) were skipped (changed on disk, unreadable, or not valid in their detected encoding; see conflicts).",
-                };
+                nothingWritten = hasSideEdits && stale > 0;
+                conflictMessage = nothingWritten
+                    ? $"The fix edits other files than the ones with occurrences of {diagnosticId}, and {stale} file(s) " +
+                      "changed on disk, could not be read, or are not valid in their detected encoding (see conflicts); " +
+                      "nothing was written. Re-run apply_fix_all."
+                    : (batch.FailureMessage, stale) switch
+                    {
+                        (null, 0) => null,
+                        (null, _) => $"{stale} file(s) were skipped (changed on disk, unreadable, or not valid in their detected encoding; see conflicts); their diagnostics are included in unfixedDiagnostics; re-run apply_fix_all to fix them.",
+                        (var failure, 0) => failure,
+                        (var failure, _) => $"{failure} {stale} other file(s) were skipped (changed on disk, unreadable, or not valid in their detected encoding; see conflicts).",
+                    };
             }
 
-            var unfixed = MergeUnfixed(result, conflicts);
+            // After an all-or-nothing refusal every change is unwritten, so all of their diagnostics are unfixed.
+            var unfixed = nothingWritten
+                ? MergeUnfixedPaths(result, result.Changes.Select(c => c.FilePath))
+                : MergeUnfixed(result, conflicts);
 
             // changes describes exactly filesChanged: every computed change on a dry run, else the written files.
             var changedFiles = dryRun
@@ -188,13 +202,19 @@ public sealed class ApplyFixAllTool
     }
 
     internal static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixed(
-        FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts)
-    {
-        if (conflicts.Count == 0)
-            return result.Unfixed;
+        FixAllResult result, IReadOnlyCollection<FileWriteConflict> conflicts) =>
+        MergeUnfixedPaths(result, conflicts.Select(c => c.FilePath));
 
-        var conflictPaths = new HashSet<string>(
-            conflicts.Select(c => c.FilePath), StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// <see cref="FixAllResult.Unfixed"/> plus the original diagnostics of every change in
+    /// <paramref name="unwrittenPaths"/> (files that were not written, so their diagnostics remain).
+    /// </summary>
+    private static IReadOnlyList<FixAllUnfixedDiagnostic> MergeUnfixedPaths(
+        FixAllResult result, IEnumerable<string> unwrittenPaths)
+    {
+        var conflictPaths = new HashSet<string>(unwrittenPaths, StringComparer.OrdinalIgnoreCase);
+        if (conflictPaths.Count == 0)
+            return result.Unfixed;
 
         // A conflict file's original diagnostics may overlap with Unfixed (e.g. one the iterative
         // fallback could not fix), so dedupe on the record's value equality.

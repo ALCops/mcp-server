@@ -74,7 +74,7 @@ public sealed class ToolErrorsTests
         var message = ToolErrors.NotFoundMessage(FixNotFoundReason.UnsupportedFix, "LC0020", "C:\\p\\a.al", 3, 5);
 
         Assert.Equal(
-            "LC0020 at C:\\p\\a.al:3:5 has a fix, but it adds or removes files, which this server cannot apply; apply it in VS Code or by hand.",
+            "LC0020 at C:\\p\\a.al:3:5 has a fix, but it adds, removes or renames files or projects, or edits a file outside the project, which this server cannot apply; apply it in VS Code or by hand.",
             message);
     }
 

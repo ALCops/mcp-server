@@ -87,7 +87,7 @@ internal static class ToolErrors
             FixNotFoundReason.NoFixForDiagnostic =>
                 $"{diagnosticId} {at} was found, but no code fix applies to it.",
             FixNotFoundReason.UnsupportedFix =>
-                $"{diagnosticId} {at} has a fix, but it adds or removes files, which this server cannot apply; apply it in VS Code or by hand.",
+                $"{diagnosticId} {at} has a fix, but it adds, removes or renames files or projects, or edits a file outside the project, which this server cannot apply; apply it in VS Code or by hand.",
             FixNotFoundReason.NoFixForEquivalenceKey =>
                 $"No fix for {diagnosticId} {at} has equivalence key '{equivalenceKey}'. Pass one candidate's equivalenceKey verbatim.",
             _ => $"No fix found for {diagnosticId} {at}.",

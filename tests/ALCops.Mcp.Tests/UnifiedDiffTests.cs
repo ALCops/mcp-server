@@ -195,4 +195,50 @@ public sealed class UnifiedDiffTests
         Assert.StartsWith("@@ -1,6000 +1,6000 @@\n", diff);
         Assert.All(diff.Split('\n')[1..^1], l => Assert.Contains(l[0], new[] { '-', '+' }));
     }
+
+    [Fact]
+    public void Truncation_NeverSeparatesALineFromItsNoNewlineMarker()
+    {
+        // One hunk: "-a" plus 2000 padded inserts and an unterminated last line. Size the last line so
+        // its "\ No newline at end of file" marker starts exactly at the cap: the plain cut would keep
+        // the line and drop its marker.
+        const string oldText = "a";
+        var pad = new string('p', 99);
+        var body = string.Concat(Enumerable.Repeat(pad + "\n", 2000));
+
+        var probe = UnifiedDiff.Render(oldText, body + "x", 3, int.MaxValue).ToString();
+        var lastLine = new string('x', 1 + UnifiedDiff.MaxDiffChars - probe.LastIndexOf(UnifiedDiff.NoNewlineMarker, StringComparison.Ordinal));
+        var newText = body + lastLine;
+
+        var full = UnifiedDiff.Render(oldText, newText, 3, int.MaxValue).ToString();
+        Assert.Equal(UnifiedDiff.MaxDiffChars, full.LastIndexOf(UnifiedDiff.NoNewlineMarker, StringComparison.Ordinal));
+
+        var (diff, truncated) = UnifiedDiff.Build(oldText, newText);
+
+        Assert.True(truncated);
+        Assert.DoesNotContain(lastLine, diff);
+        Assert.EndsWith("+" + pad + "\n", diff);
+        Assert.True(diff.Length < UnifiedDiff.MaxDiffChars, $"{diff.Length}");
+    }
+
+    [Fact]
+    public void Render_StopsBuildingHunksOncePastTheCap()
+    {
+        // Every 12th line changes: ~833 separate hunks of ~400 characters, well over the cap in total.
+        var oldText = Lines(1, 10000, "a line padded out so that every hunk is longer ");
+        var newText = string.Concat(Enumerable.Range(1, 10000).Select(i =>
+            i % 12 == 6 ? $"a changed line padded out so every hunk is longer {i}\n" : $"a line padded out so that every hunk is longer {i}\n"));
+
+        var full = UnifiedDiff.Render(oldText, newText, 3, int.MaxValue).ToString();
+        var bounded = UnifiedDiff.Render(oldText, newText, 3, UnifiedDiff.MaxDiffChars).ToString();
+
+        Assert.True(full.Length > UnifiedDiff.MaxDiffChars + 50_000, $"{full.Length}");
+        Assert.True(bounded.Length > UnifiedDiff.MaxDiffChars, $"{bounded.Length}");
+        Assert.True(bounded.Length < UnifiedDiff.MaxDiffChars + 1_000, $"{bounded.Length}");
+        Assert.StartsWith(bounded, full, StringComparison.Ordinal);
+
+        var (diff, truncated) = UnifiedDiff.Build(oldText, newText);
+        Assert.True(truncated);
+        Assert.StartsWith(diff, full, StringComparison.Ordinal);
+    }
 }

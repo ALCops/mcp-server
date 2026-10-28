@@ -16,7 +16,10 @@ namespace ALCops.Mcp.Services;
 /// line of a side that lacks a trailing newline. The common prefix and suffix are trimmed, then the
 /// middle is diffed with Myers' O(ND) algorithm; above <see cref="MaxEditDistance"/> the whole middle
 /// becomes one replacement hunk. Hunks separated by at most 2 × context unchanged lines merge.
-/// The diff is cut at a line boundary at or before <see cref="MaxDiffChars"/>, with <c>Truncated</c> set.
+/// The diff is cut at a line boundary at or before <see cref="MaxDiffChars"/> characters (200 KB,
+/// 200 × 1024 characters), with <c>Truncated</c> set; hunks stop being built once the output is past
+/// the cap, a line is never separated from the <c>\ No newline at end of file</c> marker that follows
+/// it, and a cut hunk keeps its original header, so its counts can exceed the lines shown.
 /// </remarks>
 internal static class UnifiedDiff
 {
@@ -40,21 +43,54 @@ internal static class UnifiedDiff
         if (string.Equals(oldText, newText, StringComparison.Ordinal))
             return ("", false);
 
+        var output = Render(oldText, newText, context, MaxDiffChars);
+        if (output.Length <= MaxDiffChars)
+            return (output.ToString(), false);
+
+        return (Cut(output, MaxDiffChars), true);
+    }
+
+    /// <summary>
+    /// The hunks of the diff, appended until the output is longer than <paramref name="stopAfterChars"/>:
+    /// the hunk that crosses it is completed and no further hunk is built.
+    /// </summary>
+    internal static StringBuilder Render(string oldText, string newText, int context, int stopAfterChars)
+    {
         var a = Side.Of(oldText);
         var b = Side.Of(newText);
         var ops = Normalize(Diff(a, b));
 
         var output = new StringBuilder();
         foreach (var (start, end) in Hunks(ops, context))
+        {
             WriteHunk(output, ops, start, end, a, b);
+            if (output.Length > stopAfterChars)
+                break;
+        }
 
-        if (output.Length <= MaxDiffChars)
-            return (output.ToString(), false);
-
-        // Cut at the last line boundary that fits.
-        var cut = output.ToString(0, MaxDiffChars).LastIndexOf('\n');
-        return (cut < 0 ? "" : output.ToString(0, cut + 1), true);
+        return output;
     }
+
+    /// <summary>
+    /// <paramref name="output"/> cut at the last line boundary at or before <paramref name="maxChars"/>;
+    /// when the line after that boundary is the no-newline marker, the cut moves back one line so the
+    /// marker is never separated from the line it belongs to.
+    /// </summary>
+    internal static string Cut(StringBuilder output, int maxChars)
+    {
+        if (output.Length <= maxChars)
+            return output.ToString();
+
+        var cut = output.ToString(0, maxChars).LastIndexOf('\n');
+        if (cut >= 0 && StartsWithAt(output, cut + 1, NoNewlineMarker))
+            cut = output.ToString(0, cut).LastIndexOf('\n');
+
+        return cut < 0 ? "" : output.ToString(0, cut + 1);
+    }
+
+    private static bool StartsWithAt(StringBuilder output, int index, string value) =>
+        index + value.Length <= output.Length
+        && string.Equals(output.ToString(index, value.Length), value, StringComparison.Ordinal);
 
     private enum OpKind { Equal, Delete, Insert }
 

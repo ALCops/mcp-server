@@ -14,9 +14,9 @@ public sealed class ApplyFixTool
      Description("Apply a code fix to resolve a diagnostic. Changed project files are re-read from disk first. " +
         "Writes the fixed content to the file on disk unless dryRun is true or the file changed after the fix was computed; " +
         "returns { applied, dryRun, diagnosticId, fixTitle, equivalenceKey, filePath, changes } where equivalenceKey is the key that was applied and " +
-        "changes lists every file the fix changes (or would change, on a dry run) with a hunks-only unified diff (3 context lines; diff cut at 200 KB per file with truncated: true). " +
+        "changes lists every file the fix changes (or would change, on a dry run) with a hunks-only unified diff (3 context lines; diff cut at 200 KB (200 × 1024 characters) per file with truncated: true). " +
         "If a file changed after the fix was computed, nothing is written and the error Stale is returned (re-run). " +
-        "A fix that edits several files writes all of them or none. A fix that adds or removes files is NotFound with reason UnsupportedFix and nothing is written. " +
+        "A fix that edits several files writes all of them or none. A fix that adds, removes or renames files, or edits a file outside the project, is NotFound with reason UnsupportedFix and nothing is written. " +
         "A file that is not valid in its detected encoding (e.g. a Windows-1252 file read as UTF-8) is never re-encoded: " +
         "nothing is written and the error Faulted with reason UnsupportedEncoding is returned (reason ReadFailed if the file cannot be read, WriteFailed if the write fails). " +
         "equivalenceKey is optional: without it, the rule's single fix is applied, and if the rule offers more than one distinct fix the error Ambiguous is returned whose candidates " +

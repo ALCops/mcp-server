@@ -24,7 +24,10 @@ public enum FixNotFoundReason
     NoFixForDiagnostic,
     /// <summary>Fixes exist, but none has the requested equivalence key.</summary>
     NoFixForEquivalenceKey,
-    /// <summary>The fix adds or removes files (or projects), which this server cannot apply.</summary>
+    /// <summary>
+    /// The fix cannot be applied as in-place file writes: it adds, removes or renames files or
+    /// projects, or edits a file outside the project (one the session does not track).
+    /// </summary>
     UnsupportedFix,
 }
 
