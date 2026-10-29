@@ -128,6 +128,36 @@ public class ApplyFixAllToolTests
         // Files on disk must be untouched.
         Assert.Equal(originalPageA, ctx.ReadFile("PageA.al"));
         Assert.Equal(originalPageB, ctx.ReadFile("PageB.al"));
+
+        // One diff per changed file, for exactly the files in filesChanged.
+        var filesChanged = root.GetProperty("filesChanged").EnumerateArray().Select(e => e.GetString()).ToArray();
+        var changes = root.GetProperty("changes").EnumerateArray().ToArray();
+        Assert.Equal(filesChanged, changes.Select(c => c.GetProperty("filePath").GetString()));
+        Assert.All(changes, c =>
+        {
+            Assert.False(c.GetProperty("truncated").GetBoolean());
+            Assert.StartsWith("@@ -", c.GetProperty("diff").GetString());
+            Assert.Contains("\n-                ApplicationArea = All;\n", c.GetProperty("diff").GetString());
+        });
+    }
+
+    [Fact]
+    public async Task ApplyFixAll_RealWrite_ChangesMatchTheDryRun()
+    {
+        using var ctx = new TestContext();
+
+        var dryRun = ToolResultAssert.Ok(await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020", dryRun: true));
+        var real = ToolResultAssert.Ok(await ApplyFixAllTool.ApplyFixAll(
+            ctx.SessionManager, ctx.CodeFixRunner, ctx.AnalyzerResolver, ctx.Writer,
+            ctx.ProjectPath, "LC0020"));
+
+        Assert.True(real.GetProperty("applied").GetBoolean());
+        Assert.Equal(dryRun.GetProperty("changes").GetRawText(), real.GetProperty("changes").GetRawText());
+        Assert.Equal(
+            real.GetProperty("filesChanged").EnumerateArray().Select(e => e.GetString()),
+            real.GetProperty("changes").EnumerateArray().Select(c => c.GetProperty("filePath").GetString()));
     }
 
     [Fact]
@@ -434,6 +464,7 @@ public class ApplyFixAllToolTests
         Assert.False(root.GetProperty("applied").GetBoolean(), ToolResultAssert.Text(result));
         Assert.Equal(3, root.GetProperty("diagnosticsFound").GetInt32());
         Assert.Empty(root.GetProperty("filesChanged").EnumerateArray());
+        Assert.Empty(root.GetProperty("changes").EnumerateArray());
 
         var conflicts = root.GetProperty("conflicts").EnumerateArray()
             .Select(e => Path.GetFileName(e.GetProperty("filePath").GetString())).ToArray();
@@ -478,7 +509,7 @@ public class ApplyFixAllToolTests
         Directory.GetFiles(projectPath, "*" + GuardedFileWriter.TempSuffix, SearchOption.AllDirectories);
 
     [Fact]
-    public void MergeUnfixed_NoConflicts_ReturnsIdenticalList()
+    public void MergeUnfixed_EveryChangeWritten_ReturnsIdenticalList()
     {
         var unfixed = new List<FixAllUnfixedDiagnostic>
         {
@@ -489,13 +520,13 @@ public class ApplyFixAllToolTests
             [new FixAllFileChange("FileB.al", "old", "new", [new("FileB.al", 10, 1)])],
             [], unfixed);
 
-        var merged = ApplyFixAllTool.MergeUnfixed(result, []);
+        var merged = ApplyFixAllTool.MergeUnfixed(result, ["FileB.al"]);
 
         Assert.Same(result.Unfixed, merged);
     }
 
     [Fact]
-    public void MergeUnfixed_WithConflict_AppendsDiagnosticsFromConflictedFile()
+    public void MergeUnfixed_UnwrittenChange_AppendsItsOriginalDiagnostics()
     {
         var unfixed = new List<FixAllUnfixedDiagnostic> { new("FileA.al", 5, 1) };
         var fileBDiag = new FixAllUnfixedDiagnostic("FileB.al", 10, 1);
@@ -507,8 +538,8 @@ public class ApplyFixAllToolTests
             ],
             [], unfixed);
 
-        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
-        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+        // FileA was written, FileB was skipped as a conflict.
+        var merged = ApplyFixAllTool.MergeUnfixed(result, ["FileA.al"]);
 
         Assert.Equal(2, merged.Count);
         Assert.Equal(unfixed[0], merged[0]);
@@ -516,7 +547,7 @@ public class ApplyFixAllToolTests
     }
 
     [Fact]
-    public void MergeUnfixed_ConflictFileDiagnosticAlreadyUnfixed_IsListedOnce()
+    public void MergeUnfixed_UnwrittenFileDiagnosticAlreadyUnfixed_IsListedOnce()
     {
         // A diagnostic the fix-all pass could not fix is already in Unfixed; when its file is also
         // skipped as a conflict, the merge must not list it twice.
@@ -527,8 +558,7 @@ public class ApplyFixAllToolTests
             [new FixAllFileChange("FileB.al", "old", "new", [unfixable, fixable])],
             [], [unfixable]);
 
-        var conflicts = new List<FileWriteConflict> { new("FileB.al", "conflict") };
-        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+        var merged = ApplyFixAllTool.MergeUnfixed(result, []);
 
         Assert.Equal(2, merged.Count);
         Assert.Contains(unfixable, merged);
@@ -536,7 +566,7 @@ public class ApplyFixAllToolTests
     }
 
     [Fact]
-    public void MergeUnfixed_CaseInsensitivePathMatch()
+    public void MergeUnfixed_WrittenPathsMatchCaseInsensitively()
     {
         var fileBDiag = new FixAllUnfixedDiagnostic("C:\\Src\\FileB.al", 10, 1);
         var result = new FixAllResult(
@@ -544,10 +574,51 @@ public class ApplyFixAllToolTests
             [new FixAllFileChange("C:\\Src\\FileB.al", "old", "new", [fileBDiag])],
             [], []);
 
-        var conflicts = new List<FileWriteConflict> { new("c:\\src\\fileb.al", "conflict") };
-        var merged = ApplyFixAllTool.MergeUnfixed(result, conflicts);
+        // Written under a differently cased path: nothing is unwritten, so nothing is appended.
+        var merged = ApplyFixAllTool.MergeUnfixed(result, ["c:\\src\\fileb.al"]);
 
-        Assert.Single(merged);
-        Assert.Equal(fileBDiag, merged[0]);
+        Assert.Empty(merged);
+    }
+
+    [Fact]
+    public void MergeUnfixed_UnwrittenChange_DropsItsPostFixResiduals()
+    {
+        // Unfixed is in post-fix coordinates. A changed file that was not written (skipped, refused
+        // all-or-nothing, or rolled back) keeps its on-disk text, so its residual (here shifted from
+        // line 10 to line 12) does not exist on disk: it is dropped and the file's original diagnostics
+        // are reported instead. Untouched files keep their Unfixed entries unchanged.
+        var fileAOriginal = new FixAllUnfixedDiagnostic("C:\\Src\\FileA.al", 10, 1);
+        var fileAOther = new FixAllUnfixedDiagnostic("C:\\Src\\FileA.al", 20, 1);
+        var fileAResidual = new FixAllUnfixedDiagnostic("c:\\src\\filea.al", 12, 1);
+        var fileBResidual = new FixAllUnfixedDiagnostic("C:\\Src\\FileB.al", 4, 1);
+        var untouchedResidual = new FixAllUnfixedDiagnostic("C:\\Src\\FileC.al", 7, 3);
+        var result = new FixAllResult(
+            FixAllStatus.Completed, "LC0001", 3, "Fix", "key",
+            [
+                new FixAllFileChange("C:\\Src\\FileA.al", "old", "new", [fileAOriginal, fileAOther]),
+                new FixAllFileChange("C:\\Src\\FileB.al", "old", "new", []),
+            ],
+            [], [fileAResidual, fileBResidual, untouchedResidual, untouchedResidual]);
+
+        // Nothing written (a refusal or a full rollback).
+        var refused = ApplyFixAllTool.MergeUnfixed(result, []);
+
+        Assert.DoesNotContain(fileAResidual, refused);
+        Assert.DoesNotContain(fileBResidual, refused);
+        Assert.Equal(3, refused.Count);
+        Assert.Contains(untouchedResidual, refused);
+        Assert.Contains(fileAOriginal, refused);
+        Assert.Contains(fileAOther, refused);
+        Assert.Equal(refused.Count, refused.Distinct().Count());
+
+        // FileB written, FileA skipped: FileB's residual is real, FileA's is not.
+        var partial = ApplyFixAllTool.MergeUnfixed(result, ["C:\\Src\\FileB.al"]);
+
+        Assert.DoesNotContain(fileAResidual, partial);
+        Assert.Contains(fileBResidual, partial);
+        Assert.Contains(untouchedResidual, partial);
+        Assert.Contains(fileAOriginal, partial);
+        Assert.Contains(fileAOther, partial);
+        Assert.Equal(partial.Count, partial.Distinct().Count());
     }
 }

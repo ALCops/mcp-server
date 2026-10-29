@@ -60,7 +60,15 @@ public sealed class FixRoundTripTests
                 .ToHashSet(StringComparer.Ordinal);
             Assert.Equal(candidateKeys.Order(StringComparer.Ordinal), fixKeys.Order(StringComparer.Ordinal));
 
-            // 4. Every key is accepted by apply_fix, each on a fresh copy.
+            // 4. Without a key, apply_fix is Ambiguous with the same candidates as apply_fix_all.
+            var applyAmbiguous = await ApplyFixTool.ApplyFix(
+                sessionManager, runner, analyzerResolver, writer,
+                projectPath, occurrence.FilePath, Rule, occurrence.Line, occurrence.Column);
+            var applyCandidates = ToolResultAssert.Error(applyAmbiguous, "Ambiguous").GetProperty("candidates").GetRawText();
+            var fixAllCandidates = ToolResultAssert.Error(ambiguous, "Ambiguous").GetProperty("candidates").GetRawText();
+            Assert.Equal(fixAllCandidates, applyCandidates);
+
+            // 5. Every key is accepted by apply_fix, each on a fresh copy.
             var relativeFile = Path.GetRelativePath(projectPath, occurrence.FilePath);
             foreach (var key in fixKeys)
                 await ApplyFixOnFreshCopyAsync(relativeFile, occurrence.Line, occurrence.Column, key);

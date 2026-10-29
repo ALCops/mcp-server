@@ -24,6 +24,11 @@ public enum FixNotFoundReason
     NoFixForDiagnostic,
     /// <summary>Fixes exist, but none has the requested equivalence key.</summary>
     NoFixForEquivalenceKey,
+    /// <summary>
+    /// The fix cannot be applied as in-place file writes: it adds, removes or renames files or
+    /// projects, or edits a file outside the project (one the session does not track).
+    /// </summary>
+    UnsupportedFix,
 }
 
 /// <summary>Outcome of <c>CodeFixRunner.GetFixesAsync</c>: either fixes, or the reason there are none.</summary>
@@ -33,19 +38,38 @@ public record FixLookupResult(IReadOnlyList<CodeFixInfo> Fixes, FixNotFoundReaso
     public static FixLookupResult NotFound(FixNotFoundReason reason) => new([], reason);
 }
 
+/// <summary>Coarse-grained outcome of <c>CodeFixRunner.ApplyFixAsync</c>, mirroring <see cref="FixAllStatus"/>.</summary>
+public enum FixApplyStatus
+{
+    /// <summary>A fix was chosen and computed; see <see cref="FixApplyResult.Fix"/>.</summary>
+    Applied,
+    /// <summary>No fix applies; <see cref="FixApplyResult.NotFoundReason"/> says why.</summary>
+    NotFound,
+    /// <summary>Several distinct fixes apply and no equivalence key was given; see <see cref="FixApplyResult.Candidates"/>.</summary>
+    Ambiguous,
+}
+
 /// <summary>
-/// Outcome of <c>CodeFixRunner.ApplyFixAsync</c>: the computed fix, or the reason there is none.
-/// <see cref="Candidates"/> is filled for <see cref="FixNotFoundReason.NoFixForEquivalenceKey"/>.
+/// Outcome of <c>CodeFixRunner.ApplyFixAsync</c>: the computed fix, the reason there is none, or the
+/// distinct fixes to choose from. <see cref="Candidates"/> is filled for <see cref="FixApplyStatus.Ambiguous"/>
+/// and for <see cref="FixNotFoundReason.NoFixForEquivalenceKey"/>; empty otherwise.
 /// <see cref="MessageOverride"/>, when set, replaces the shared per-reason message of the <c>NotFound</c> error.
 /// </summary>
-public record FixApplyResult(CodeFixResult? Fix, FixNotFoundReason? NotFoundReason, IReadOnlyList<CodeFixInfo> Candidates)
+public record FixApplyResult(
+    FixApplyStatus Status,
+    CodeFixResult? Fix,
+    FixNotFoundReason? NotFoundReason,
+    IReadOnlyList<CodeFixInfo> Candidates)
 {
     public string? MessageOverride { get; init; }
 
-    public static FixApplyResult Applied(CodeFixResult fix) => new(fix, null, []);
+    public static FixApplyResult Applied(CodeFixResult fix) => new(FixApplyStatus.Applied, fix, null, []);
 
     public static FixApplyResult NotFound(FixNotFoundReason reason, IReadOnlyList<CodeFixInfo>? candidates = null) =>
-        new(null, reason, candidates ?? []);
+        new(FixApplyStatus.NotFound, null, reason, candidates ?? []);
+
+    public static FixApplyResult Ambiguous(IReadOnlyList<CodeFixInfo> candidates) =>
+        new(FixApplyStatus.Ambiguous, null, null, candidates);
 }
 
 /// <summary>A diagnostic found at a position, or the reason none was.</summary>

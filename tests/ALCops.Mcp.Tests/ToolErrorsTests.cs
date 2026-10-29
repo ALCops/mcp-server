@@ -69,6 +69,16 @@ public sealed class ToolErrorsTests
     }
 
     [Fact]
+    public void NotFoundMessage_UnsupportedFix_SaysItCannotBeApplied()
+    {
+        var message = ToolErrors.NotFoundMessage(FixNotFoundReason.UnsupportedFix, "LC0020", "C:\\p\\a.al", 3, 5);
+
+        Assert.Equal(
+            "LC0020 at C:\\p\\a.al:3:5 has a fix, but it adds, removes or renames files or projects, or edits a file outside the project, which this server cannot apply; apply it in VS Code or by hand.",
+            message);
+    }
+
+    [Fact]
     public void NotFoundMessage_NoDiagnosticAtPosition_PointsToAnalyze()
     {
         var message = ToolErrors.NotFoundMessage(FixNotFoundReason.NoDiagnosticAtPosition, "LC0020", "C:\\p\\a.al", 3, 5);

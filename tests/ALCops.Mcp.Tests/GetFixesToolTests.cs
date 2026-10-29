@@ -228,21 +228,6 @@ public sealed class GetFixesToolTests
         });
     }
 
-    /// <summary>Wraps a real provider, optionally hiding its analyzers or replacing its fix providers.</summary>
-    private sealed class DecoratedProvider(
-        IAnalyzerProvider inner,
-        bool hideAnalyzers = false,
-        ImmutableArray<CodeFixProvider>? fixProviders = null) : IAnalyzerProvider
-    {
-        public ImmutableArray<DiagnosticAnalyzer> GetAllAnalyzers() => hideAnalyzers ? [] : inner.GetAllAnalyzers();
-        public ImmutableArray<CodeFixProvider> GetAllCodeFixProviders() => fixProviders ?? inner.GetAllCodeFixProviders();
-        public ImmutableArray<CodeFixProvider> GetCodeFixProvidersForDiagnostic(string diagnosticId) =>
-            fixProviders ?? inner.GetCodeFixProvidersForDiagnostic(diagnosticId);
-        public ImmutableDictionary<string, DiagnosticDescriptor> GetAllDescriptors() => inner.GetAllDescriptors();
-        public string GetCopName(string diagnosticId) => inner.GetCopName(diagnosticId);
-        public bool HasCodeFix(string diagnosticId) => inner.HasCodeFix(diagnosticId);
-    }
-
     /// <summary>Claims LC0020 but registers no code action.</summary>
     private sealed class SilentFixProvider : CodeFixProvider
     {

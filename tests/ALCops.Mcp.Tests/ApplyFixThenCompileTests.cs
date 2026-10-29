@@ -63,7 +63,7 @@ public sealed class ApplyFixThenCompileTests(ApplyFixAlMcpFixture fixture, ITest
         var applyResult = await ApplyFixTool.ApplyFix(
             sessionManager, codeFixRunner, analyzerResolver, new GuardedFileWriter(),
             projectDir, filePath, "LC0020", line, column,
-            lookup.Fixes[0].EquivalenceKey, analyzers: null, Cts.Token);
+            lookup.Fixes[0].EquivalenceKey, analyzers: null, cancellationToken: Cts.Token);
 
         Assert.True(ToolResultAssert.Ok(applyResult).GetProperty("applied").GetBoolean());
 
